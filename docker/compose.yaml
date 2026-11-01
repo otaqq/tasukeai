@@ -1,0 +1,20 @@
+# tasukeai with Docker Compose. From the repository root:
+#   cp examples/tasukeai.toml tasukeai.toml    # describe your machines and jobs
+#   docker compose -f docker/compose.yaml up -d
+name: tasukeai
+
+services:
+  tasukeai:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+      target: production
+    image: tasukeai:local
+    ports:
+      - "${TASUKEAI_PORT:-9660}:9660"
+    volumes:
+      - ${TASUKEAI_CONFIG:-../tasukeai.toml}:/tasukeai.toml:ro
+    restart: unless-stopped
+    # A metrics store or machines' HTTP checks on the Docker host: http://host.docker.internal:<port>
+    extra_hosts:
+      - "host.docker.internal:host-gateway"

@@ -1,0 +1,40 @@
+# Example configuration for tasukeai (see docs/design.md). Signals are named here and compared by rules; the skeleton
+# does not collect them yet, so every rule reports its signal as unknown.
+stale_after_seconds = 120
+
+[machines.desk]          # a workstation someone also plays games on
+priority = 1
+accel = "cuda"
+vram_gb = 12
+ram_gb = 96
+rules = [{ signal = "gpu_temp_celsius", max = 80, because = "hot" },
+         { signal = "idle_seconds", min = 600, because = "someone is using it" }]
+jobs = { train = 1, extract = 2, chat = 1 }
+
+[machines.mini]          # a small always-on box
+priority = 2
+accel = "metal"
+ram_gb = 16
+rules = [{ signal = "thermal_state", max = 1, because = "hot" }]
+jobs = { extract = 1, chat = 1 }
+
+[machines.laptop]        # leaves the house, sleeps
+priority = 4
+accel = "metal"
+ram_gb = 16
+rules = [{ signal = "on_ac", min = 1, because = "on battery" },
+         { signal = "idle_seconds", min = 600, because = "someone is using it" }]
+jobs = { extract = 1, chat = 1 }
+
+[jobs.train]             # one heavy job that occupies a machine
+mode = "exclusive"
+accel = ["cuda"]
+vram_gb = 11
+lease_seconds = 1800
+
+[jobs.extract]           # N workers in parallel
+mode = "spread"
+lease_seconds = 3600
+
+[jobs.chat]              # short requests through an LLM proxy
+mode = "rank"
