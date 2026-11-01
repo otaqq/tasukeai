@@ -40,6 +40,45 @@ pub struct Rule {
     pub because: Option<String>,
 }
 
+/// A quick HTTP check at decision time: the signal is 1 when the URL answers 2xx in time and 0 when it does not; with
+/// `json`, the number (or boolean) at that JSON pointer instead, e.g. "/vram_free_mb".
+#[derive(Debug, Clone, Deserialize, PartialEq)]
+pub struct Check {
+    pub signal: String,
+    pub url: String,
+    #[serde(default)]
+    pub timeout_ms: Option<u64>,
+    #[serde(default)]
+    pub json: Option<String>,
+}
+
+/// Where signals come from: a Prometheus-compatible query API (Prometheus, VictoriaMetrics, Thanos ...).
+#[derive(Debug, Clone, Deserialize)]
+pub struct Metrics {
+    /// Base URL, e.g. http://prometheus:9090 (the API is under /api/v1/query). None: only HTTP checks.
+    #[serde(default)]
+    pub url: Option<String>,
+    #[serde(default = "default_timeout")]
+    pub timeout_ms: u64,
+    /// The process keeps collected signals this long before asking again.
+    #[serde(default = "default_cache")]
+    pub cache_seconds: u64,
+}
+
+impl Default for Metrics {
+    fn default() -> Self {
+        Metrics { url: None, timeout_ms: default_timeout(), cache_seconds: default_cache() }
+    }
+}
+
+fn default_timeout() -> u64 {
+    3000
+}
+
+fn default_cache() -> u64 {
+    10
+}
+
 #[derive(Debug, Clone, Deserialize)]
 pub struct Machine {
     /// Lower is tried first.
@@ -56,6 +95,18 @@ pub struct Machine {
     /// Job kinds installed here, with how many can run at once (slots).
     #[serde(default)]
     pub jobs: BTreeMap<String, u32>,
+    /// The value of the `instance` label of its metrics; defaults to the machine's name.
+    #[serde(default)]
+    pub instance: Option<String>,
+    /// Presets whose signals this machine has (built-in node, node_darwin, windows, or the configuration's own);
+    /// later ones win for the same signal.
+    #[serde(default)]
+    pub presets: Vec<String>,
+    /// Signals of this machine only (PromQL, {instance} replaced); they win over presets.
+    #[serde(default)]
+    pub queries: BTreeMap<String, String>,
+    #[serde(default)]
+    pub checks: Vec<Check>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -86,6 +137,11 @@ pub struct Config {
     /// Signals older than this many seconds count as unknown.
     #[serde(default = "default_stale")]
     pub stale_after_seconds: u64,
+    #[serde(default)]
+    pub metrics: Metrics,
+    /// Presets of this configuration, added to (and overriding) the built-in ones.
+    #[serde(default)]
+    pub presets: BTreeMap<String, BTreeMap<String, String>>,
     pub machines: BTreeMap<String, Machine>,
     #[serde(default)]
     pub jobs: BTreeMap<String, Job>,
@@ -97,9 +153,31 @@ fn default_stale() -> u64 {
 
 impl Config {
     pub fn from_toml(text: &str) -> Result<Self, ConfigError> {
-        let c: Config = toml::from_str(text)?;
+        let mut c: Config = toml::from_str(text)?;
+        let builtin: BTreeMap<String, BTreeMap<String, String>> =
+            toml::from_str(include_str!("presets.toml")).expect("built-in presets parse");
+        for (name, signals) in builtin {
+            let own = c.presets.remove(&name).unwrap_or_default();
+            let mut merged = signals;
+            merged.extend(own);
+            c.presets.insert(name, merged);
+        }
         c.validate()?;
         Ok(c)
+    }
+
+    /// The PromQL expression of every signal of a machine, {instance} replaced.
+    pub fn queries_of(&self, machine: &str) -> BTreeMap<String, String> {
+        let mut out = BTreeMap::new();
+        let Some(m) = self.machines.get(machine) else { return out };
+        let instance = m.instance.clone().unwrap_or_else(|| machine.to_string());
+        for p in &m.presets {
+            if let Some(signals) = self.presets.get(p) {
+                out.extend(signals.iter().map(|(k, v)| (k.clone(), v.replace("{instance}", &instance))));
+            }
+        }
+        out.extend(m.queries.iter().map(|(k, v)| (k.clone(), v.replace("{instance}", &instance))));
+        out
     }
 
     pub fn from_file(path: &Path) -> Result<Self, ConfigError> {
@@ -116,6 +194,11 @@ impl Config {
             }
             for r in &m.rules {
                 check_rule(r, &format!("machine {name}"))?;
+            }
+            for p in &m.presets {
+                if !self.presets.contains_key(p) {
+                    return Err(ConfigError::Invalid(format!("machine {name} uses unknown preset {p}")));
+                }
             }
         }
         for (name, j) in &self.jobs {

@@ -1,0 +1,26 @@
+# Built-in signal presets: one PromQL expression per signal; {instance} is replaced by the machine's instance label.
+# Only standard metrics of common exporters, checked against real exporters. Signals of other exporters (GPU
+# exporters, textfile collectors) go in the configuration's own [presets] or in a machine's [queries].
+# A machine that stops reporting loses its series (staleness), so its signals become unknown; a rule on `up`
+# (min = 1) also keeps it out explicitly.
+
+[node]            # node_exporter on Linux
+up = 'max(up{instance="{instance}"})'
+ram_usable_bytes = 'max(node_memory_MemAvailable_bytes{instance="{instance}"})'
+ram_total_bytes = 'max(node_memory_MemTotal_bytes{instance="{instance}"})'
+cpu_busy_ratio = 'clamp_min(1 - avg(rate(node_cpu_seconds_total{instance="{instance}", mode="idle"}[2m])), 0)'
+load15 = 'max(node_load15{instance="{instance}"})'
+
+[node_darwin]     # node_exporter on macOS (its memory metrics have other names than on Linux)
+up = 'max(up{instance="{instance}"})'
+ram_usable_bytes = 'max(node_memory_free_bytes{instance="{instance}"}) + max(node_memory_inactive_bytes{instance="{instance}"}) + max(node_memory_purgeable_bytes{instance="{instance}"})'
+ram_total_bytes = 'max(node_memory_total_bytes{instance="{instance}"})'
+cpu_busy_ratio = 'clamp_min(1 - avg(rate(node_cpu_seconds_total{instance="{instance}", mode="idle"}[2m])), 0)'
+on_ac = 'max(node_power_supply_power_source_state{instance="{instance}", state="AC Power"})'
+battery_ratio = 'max(node_power_supply_current_capacity{instance="{instance}"}) / 100'
+
+[windows]         # windows_exporter
+up = 'max(up{instance="{instance}"})'
+ram_usable_bytes = 'max(windows_memory_physical_free_bytes{instance="{instance}"})'
+ram_total_bytes = 'max(windows_memory_physical_total_bytes{instance="{instance}"})'
+cpu_busy_ratio = 'clamp_min(1 - avg(rate(windows_cpu_time_total{instance="{instance}", mode="idle"}[2m])), 0)'

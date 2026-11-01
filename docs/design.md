@@ -5,7 +5,7 @@ work now**, among machines that also have other lives: a desktop someone plays g
 house, a mini PC that runs hot. It does not run the work. It answers the question, with reasons, to whatever runs
 it: a workflow engine, a batch script, an LLM proxy.
 
-Status: design draft, nothing built yet.
+Status: early. The decision core and signal collection are built (see the README); leases over HTTP are next.
 
 ## Why
 

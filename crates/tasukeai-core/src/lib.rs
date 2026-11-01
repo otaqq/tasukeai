@@ -2,10 +2,12 @@
 //! (games, travel, heat). Configuration, rules, the three modes (exclusive, spread, rank) and the reasons behind each
 //! decision. The `tasukeai` binary adds HTTP, a CLI and shared leases on top; see docs/design.md.
 
+pub mod collect;
 pub mod config;
 pub mod decide;
 
-pub use config::{Config, ConfigError, Job, Machine, Mode, Rule};
+pub use collect::{collect, Collected};
+pub use config::{Check, Config, ConfigError, Job, Machine, Metrics, Mode, Rule};
 pub use decide::{assess, pick, rank, spread, Assessment, Candidate, DecideError, Lease, Rejected, Signals, Snapshot};
 
 #[cfg(test)]

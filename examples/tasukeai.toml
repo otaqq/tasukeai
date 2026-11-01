@@ -1,13 +1,24 @@
-# Example configuration for tasukeai (see docs/design.md). Signals are named here and compared by rules; the skeleton
-# does not collect them yet, so every rule reports its signal as unknown.
+# Example configuration for tasukeai (see docs/design.md and the README). Machines get signals from presets
+# (built-in: node, node_darwin, windows), their own PromQL queries and HTTP checks; rules compare signals.
 stale_after_seconds = 120
+
+[metrics]
+url = "http://prometheus:9090"   # a Prometheus-compatible query API
+
+[presets.gpu]                    # signals of a GPU exporter you run (names depend on the exporter)
+gpu_temp_celsius = 'max(my_gpu_temperature_celsius{instance="{instance}"})'
 
 [machines.desk]          # a workstation someone also plays games on
 priority = 1
 accel = "cuda"
 vram_gb = 12
 ram_gb = 96
-rules = [{ signal = "gpu_temp_celsius", max = 80, because = "hot" },
+instance = "desk:9100"   # the instance label of its metrics (default: the machine's name)
+presets = ["node", "gpu"]
+queries = { idle_seconds = 'max(my_idle_seconds{instance="{instance}"})' }
+checks = [{ signal = "server_up", url = "http://desk:11434/", timeout_ms = 2000 }]
+rules = [{ signal = "up", min = 1 }, { signal = "server_up", min = 1, because = "its server does not answer" },
+         { signal = "gpu_temp_celsius", max = 80, because = "hot" },
          { signal = "idle_seconds", min = 600, because = "someone is using it" }]
 jobs = { train = 1, extract = 2, chat = 1 }
 
@@ -15,14 +26,16 @@ jobs = { train = 1, extract = 2, chat = 1 }
 priority = 2
 accel = "metal"
 ram_gb = 16
-rules = [{ signal = "thermal_state", max = 1, because = "hot" }]
+presets = ["node_darwin"]
+rules = [{ signal = "up", min = 1 }, { signal = "thermal_state", max = 1, because = "hot" }]
 jobs = { extract = 1, chat = 1 }
 
-[machines.laptop]        # leaves the house, sleeps
+[machines.laptop]        # leaves the house, sleeps (then its series go away and its signals are unknown)
 priority = 4
 accel = "metal"
 ram_gb = 16
-rules = [{ signal = "on_ac", min = 1, because = "on battery" },
+presets = ["node_darwin"]
+rules = [{ signal = "up", min = 1 }, { signal = "on_ac", min = 1, because = "on battery" },
          { signal = "idle_seconds", min = 600, because = "someone is using it" }]
 jobs = { extract = 1, chat = 1 }
 
