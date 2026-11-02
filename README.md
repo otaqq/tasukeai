@@ -7,8 +7,8 @@ desktop someone plays games on, a laptop that leaves the house, a mini PC that r
 machines already export (Prometheus-compatible) and applies the owners' rules ("only on AC", "only after 10 minutes
 without input", "not above 80 °C"). It does not run the work; it answers, with reasons, to whatever runs it.
 
-Status: early. The decision core (rules, modes `exclusive` / `spread` / `rank`, reasons) and signal collection
-(PromQL, HTTP checks) work and are tested; leases over HTTP come next. Design: [docs/design.md](docs/design.md).
+Status: early. The decision core (rules, modes `exclusive` / `spread` / `rank`, reasons), signal collection
+(PromQL, HTTP checks) and leases work and are tested. Design: [docs/design.md](docs/design.md).
 
 ## Signals
 
@@ -34,7 +34,26 @@ cargo run -p tasukeai -- --config examples/tasukeai.toml signals        # what e
 cargo run -p tasukeai -- --config examples/tasukeai.toml assess train   # who can take it, and why not
 ```
 
-HTTP: `GET /health`, `GET /machines` (signals and collection errors), `GET /assess?job=<kind>`.
+## HTTP
+
+| Call | Answer |
+|---|---|
+| `GET /health` | `ok` |
+| `GET /machines` | every machine's signals and what could not be collected |
+| `GET /assess?job=<kind>` | usable machines in order, reasons for the others (no lease) |
+| `POST /pick?job=<kind>` | `exclusive`: `{machine, lease, assessment}`; 409 with the reasons when none is free |
+| `POST /spread?job=<kind>&count=N` | `spread`: up to N leases, a machine once per free slot; 409 when none |
+| `GET /rank?job=<kind>` | `rank`: `{machines, assessment}`, no lease |
+| `GET /leases` | the leases that have not run out |
+| `POST /leases/<id>/renew` | extend a lease by its job's `lease_seconds` |
+| `DELETE /leases/<id>` | give the machine back |
+
+A lease of an `exclusive` job holds the whole machine; a `spread` lease holds one slot of its own job. Decisions and
+leases are taken under one lock, so two callers never get the same slot. Leases live in memory (a restart forgets
+them).
+
+From scripts: `tasukeai pick <kind> --server http://host:9660` prints `machine lease-id`, or the reasons and exits 75
+when none is free; `tasukeai release <lease-id> --server ...` gives it back.
 
 ## Run with Docker
 

@@ -5,7 +5,7 @@ work now**, among machines that also have other lives: a desktop someone plays g
 house, a mini PC that runs hot. It does not run the work. It answers the question, with reasons, to whatever runs
 it: a workflow engine, a batch script, an LLM proxy.
 
-Status: early. The decision core and signal collection are built (see the README); leases over HTTP are next.
+Status: early. The decision core, signal collection and leases (HTTP and CLI) are built; see the README.
 
 ## Why
 
@@ -48,15 +48,18 @@ route to healthy inference servers, but know nothing about the machine's owner. 
 
 HTTP (JSON):
 
-- `GET /machines` — every machine: signals, freshness, whether it can help, and the reasons it cannot.
-- `GET /pick?job=<kind>` — `exclusive`: the chosen machine and its lease, plus the others with reasons.
-- `GET /spread?job=<kind>&count=N` — `spread`: up to N assignments with leases.
+- `GET /machines` — every machine's signals and what could not be collected.
+- `GET /assess?job=<kind>` — usable machines in order and the reasons for the others (no lease).
+- `POST /pick?job=<kind>` — `exclusive`: the chosen machine and its lease; 409 with the reasons when none is free.
+- `POST /spread?job=<kind>&count=N` — `spread`: up to N leases (a machine once per slot); 409 when none.
 - `GET /rank?job=<kind>` — `rank`: usable machines in order, no lease.
-- `DELETE /leases/<id>` — release a lease (the job ended or did not start).
-- `GET /metrics` — tasukeai's own state for Prometheus (decisions, leases, reasons).
+- `GET /leases`, `POST /leases/<id>/renew` (long jobs extend their lease), `DELETE /leases/<id>` (the job ended or did
+  not start).
+- Planned: `GET /metrics` — tasukeai's own state for Prometheus (decisions, leases, reasons).
 
-CLI (for scripts and workflow engines): `tasukeai pick <kind>` prints the machine name (exit code 75 when none can
-take it), `tasukeai machines` prints the table with reasons, `tasukeai release <lease>`.
+CLI (for scripts and workflow engines): `tasukeai pick <kind> --server URL` prints the machine name and the lease id
+(exit code 75 when none can take it, with the reasons on stderr), `tasukeai release <lease> --server URL`;
+`tasukeai signals` and `tasukeai assess <kind>` decide locally without leases.
 
 Integrations stay outside the core: a LiteLLM callback that filters deployments with `/rank`, a workflow-engine task
 that calls `pick` and passes the machine on.

@@ -5,9 +5,11 @@
 pub mod collect;
 pub mod config;
 pub mod decide;
+pub mod leases;
 
 pub use collect::{collect, Collected};
 pub use config::{Check, Config, ConfigError, Job, Machine, Metrics, Mode, Rule};
+pub use leases::Leases;
 pub use decide::{assess, pick, rank, spread, Assessment, Candidate, DecideError, Lease, Rejected, Signals, Snapshot};
 
 #[cfg(test)]

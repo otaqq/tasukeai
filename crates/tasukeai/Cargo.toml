@@ -14,3 +14,4 @@ anyhow = "1"
 axum = "0.8"
 clap = { version = "4", features = ["derive"] }
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "net", "signal"] }
+ureq = { version = "2", features = ["json"] }
