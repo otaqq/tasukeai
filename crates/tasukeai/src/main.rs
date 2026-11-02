@@ -265,11 +265,23 @@ async fn main() -> anyhow::Result<()> {
         Cmd::Serve { listen } => {
             let listener = tokio::net::TcpListener::bind(&listen).await.with_context(|| format!("listening on {listen}"))?;
             eprintln!("tasukeai listening on {listen}");
-            axum::serve(listener, router(App::new(cfg))).with_graceful_shutdown(async { tokio::signal::ctrl_c().await.ok(); }).await?;
+            axum::serve(listener, router(App::new(cfg))).with_graceful_shutdown(shutdown()).await?;
         }
         Cmd::Health { .. } | Cmd::Pick { .. } | Cmd::Release { .. } => unreachable!(),
     }
     Ok(())
+}
+
+/// Ctrl-C, or SIGTERM from a container runtime (as PID 1 in a container, a signal without a handler is ignored).
+async fn shutdown() {
+    #[cfg(unix)]
+    {
+        let mut term = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()).expect("SIGTERM handler");
+        tokio::select! { _ = tokio::signal::ctrl_c() => {}, _ = term.recv() => {} }
+    }
+    #[cfg(not(unix))]
+    tokio::signal::ctrl_c().await.ok();
+    eprintln!("tasukeai stopping");
 }
 
 #[cfg(test)]
