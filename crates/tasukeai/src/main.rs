@@ -421,7 +421,7 @@ async fn main() -> anyhow::Result<()> {
         }
         Cmd::Release { lease, server } => {
             let url = format!("{}/leases/{lease}", server.trim_end_matches('/'));
-            tokio::task::spawn_blocking(move || ureq::delete(&url).call()).await??;
+            tokio::task::spawn_blocking(move || ureq::delete(&url).call().map(drop).map_err(Box::new)).await??;
             return Ok(());
         }
         Cmd::Hold {
@@ -447,7 +447,7 @@ async fn main() -> anyhow::Result<()> {
         }
         Cmd::Unhold { hold, server } => {
             let url = format!("{}/holds/{hold}", server.trim_end_matches('/'));
-            tokio::task::spawn_blocking(move || ureq::delete(&url).call()).await??;
+            tokio::task::spawn_blocking(move || ureq::delete(&url).call().map(drop).map_err(Box::new)).await??;
             return Ok(());
         }
         Cmd::Holds { server } => {

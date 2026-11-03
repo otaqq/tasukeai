@@ -39,7 +39,7 @@ pub struct Hold {
 
 impl Hold {
     pub fn active(&self, now: u64) -> bool {
-        self.until.map_or(true, |u| u > now)
+        self.until.is_none_or(|u| u > now)
     }
 
     fn reason(&self) -> String {
@@ -177,7 +177,7 @@ pub fn assess_with(
         }
         for h in holds
             .iter()
-            .filter(|h| h.active(now) && &h.machine == name && h.job.as_deref().map_or(true, |hj| hj == job))
+            .filter(|h| h.active(now) && &h.machine == name && h.job.as_deref().is_none_or(|hj| hj == job))
         {
             reasons.push(h.reason());
         }

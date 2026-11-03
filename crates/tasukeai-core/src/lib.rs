@@ -95,7 +95,7 @@ mode = "rank"
             until: NOW + 100,
             endpoint: None,
         };
-        let (m, a) = pick(&cfg, "train", &all_fine(), &[lease.clone()], &[], NOW).unwrap();
+        let (m, a) = pick(&cfg, "train", &all_fine(), std::slice::from_ref(&lease), &[], NOW).unwrap();
         assert_eq!(m, None);
         assert!(a.rejected[0].reasons.iter().any(|r| r.contains("leased")));
         // an expired lease does not count
@@ -161,7 +161,7 @@ mode = "rank"
             until: NOW + 60,
             endpoint: None,
         };
-        let (got, a) = spread(&cfg, "extract", 10, &all_fine(), &[train.clone()], &[], NOW).unwrap();
+        let (got, a) = spread(&cfg, "extract", 10, &all_fine(), std::slice::from_ref(&train), &[], NOW).unwrap();
         assert_eq!(got, vec!["mini", "laptop"]);
         assert!(a.rejected[0].reasons.contains(&"held by train (exclusive)".to_string()));
         // a spread lease does not hold the exclusive job's slot, only its own
@@ -228,7 +228,7 @@ mode = "rank"
             because: Some("asked".into()),
             jobs: None,
         };
-        let (order, a) = rank_with(&cfg, "chat", &s, &[], &[need.clone()], NOW).unwrap();
+        let (order, a) = rank_with(&cfg, "chat", &s, &[], std::slice::from_ref(&need), NOW).unwrap();
         assert!(order.is_empty() && a.rejected[0].reasons == vec!["vram_free_gb = 6 < 10 (asked)".to_string()]);
         let fits = Rule { min: Some(4.0), ..need };
         assert_eq!(rank_with(&cfg, "chat", &s, &[], &[fits], NOW).unwrap().0, vec!["desk"]);

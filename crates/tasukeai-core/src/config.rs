@@ -47,7 +47,7 @@ pub struct Rule {
 impl Rule {
     /// Whether the rule counts for `job`.
     pub fn applies_to(&self, job: &str) -> bool {
-        self.jobs.as_ref().map_or(true, |js| js.iter().any(|j| j == job))
+        self.jobs.as_ref().is_none_or(|js| js.iter().any(|j| j == job))
     }
 }
 
