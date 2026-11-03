@@ -1,7 +1,7 @@
 //! tasukeai: tell which machine should take a piece of work now (process form; see docs/design.md).
 //!
 //! Collects signals (PromQL, HTTP checks; cached for [metrics] cache_seconds), decides, and keeps one lease book for
-//! all callers: POST /pick and /spread lease, GET /rank does not.
+//! all callers: POST /pick and /spread lease, GET /rank does not; POST /holds keeps a machine out by hand.
 
 use anyhow::Context;
 use axum::{
@@ -16,6 +16,17 @@ use serde::Deserialize;
 use serde_json::json;
 use std::{path::PathBuf, sync::{Arc, Mutex}, time::{Instant, SystemTime, UNIX_EPOCH}};
 use tasukeai_core::{assess, collect, rank, Collected, Config, Leases};
+
+#[derive(Deserialize)]
+struct HoldRequest {
+    machine: String,
+    #[serde(default)]
+    job: Option<String>,
+    #[serde(default)]
+    minutes: Option<u64>,
+    #[serde(default)]
+    note: String,
+}
 
 /// Exit code when no machine can take the job (EX_TEMPFAIL: try again later)
 const NONE_FREE: i32 = 75;
@@ -52,6 +63,32 @@ enum Cmd {
     /// Give a lease back to a running server
     Release {
         lease: String,
+        #[arg(long, default_value = "http://127.0.0.1:9660")]
+        server: String,
+    },
+    /// Keep a machine out by hand on a running server (every job, or --job); prints the hold id
+    Hold {
+        machine: String,
+        /// Only this job (default: every job)
+        #[arg(long)]
+        job: Option<String>,
+        /// End by itself after this many minutes (default: until unhold)
+        #[arg(long)]
+        minutes: Option<u64>,
+        /// Why, shown in the reasons ("playing a game")
+        #[arg(long, default_value = "")]
+        note: String,
+        #[arg(long, default_value = "http://127.0.0.1:9660")]
+        server: String,
+    },
+    /// End a hold on a running server
+    Unhold {
+        hold: String,
+        #[arg(long, default_value = "http://127.0.0.1:9660")]
+        server: String,
+    },
+    /// List the holds of a running server
+    Holds {
         #[arg(long, default_value = "http://127.0.0.1:9660")]
         server: String,
     },
@@ -129,8 +166,11 @@ async fn machines(State(app): State<Arc<App>>) -> Json<serde_json::Value> {
 
 async fn assess_job(State(app): State<Arc<App>>, Query(q): Query<JobQuery>) -> Response {
     let c = app.signals().await;
-    let leases = app.leases.lock().unwrap().active(now()).to_vec();
-    match assess(&app.cfg, &q.job, &c.snapshot, &leases, now()) {
+    let (leases, holds) = {
+        let mut book = app.leases.lock().unwrap();
+        (book.active(now()).to_vec(), book.holds(now()).to_vec())
+    };
+    match assess(&app.cfg, &q.job, &c.snapshot, &leases, &holds, now()) {
         Ok(a) => Json(a).into_response(),
         Err(e) => err(StatusCode::NOT_FOUND, e),
     }
@@ -160,11 +200,15 @@ async fn spread_job(State(app): State<Arc<App>>, Query(q): Query<JobQuery>) -> R
     }
 }
 
-/// GET /rank?job=: the usable machines in order, no lease.
+/// GET /rank?job=: the usable machines in order, no lease (holds count); with the job's endpoint URLs, in the same order.
 async fn rank_job(State(app): State<Arc<App>>, Query(q): Query<JobQuery>) -> Response {
     let c = app.signals().await;
-    match rank(&app.cfg, &q.job, &c.snapshot, now()) {
-        Ok((order, a)) => Json(json!({"machines": order, "assessment": a})).into_response(),
+    let holds = app.leases.lock().unwrap().holds(now()).to_vec();
+    match rank(&app.cfg, &q.job, &c.snapshot, &holds, now()) {
+        Ok((order, a)) => {
+            let endpoints: Vec<_> = a.usable.iter().map(|c| c.endpoint.clone()).collect();
+            Json(json!({"machines": order, "endpoints": endpoints, "assessment": a})).into_response()
+        }
         Err(e) => err(StatusCode::BAD_REQUEST, e),
     }
 }
@@ -188,6 +232,27 @@ async fn release_lease(State(app): State<Arc<App>>, Path(id): Path<String>) -> R
     }
 }
 
+/// POST /holds {machine, job?, minutes?, note?}: keep a machine out by hand; 201 with the hold.
+async fn add_hold(State(app): State<Arc<App>>, Json(r): Json<HoldRequest>) -> Response {
+    let until = r.minutes.map(|m| now() + m * 60);
+    match app.leases.lock().unwrap().hold(&app.cfg, &r.machine, r.job.as_deref(), until, &r.note, now()) {
+        Ok(h) => (StatusCode::CREATED, Json(h)).into_response(),
+        Err(e) => err(StatusCode::BAD_REQUEST, e),
+    }
+}
+
+async fn list_holds(State(app): State<Arc<App>>) -> Json<serde_json::Value> {
+    Json(json!(app.leases.lock().unwrap().holds(now())))
+}
+
+async fn end_hold(State(app): State<Arc<App>>, Path(id): Path<String>) -> Response {
+    if app.leases.lock().unwrap().unhold(&id) {
+        StatusCode::NO_CONTENT.into_response()
+    } else {
+        err(StatusCode::NOT_FOUND, format!("no hold {id}"))
+    }
+}
+
 fn router(app: Arc<App>) -> Router {
     Router::new()
         .route("/health", get(health))
@@ -199,6 +264,8 @@ fn router(app: Arc<App>) -> Router {
         .route("/leases", get(list_leases))
         .route("/leases/{id}/renew", post(renew_lease))
         .route("/leases/{id}", delete(release_lease))
+        .route("/holds", post(add_hold).get(list_holds))
+        .route("/holds/{id}", delete(end_hold))
         .with_state(app)
 }
 
@@ -238,6 +305,31 @@ async fn main() -> anyhow::Result<()> {
             tokio::task::spawn_blocking(move || ureq::delete(&url).call()).await??;
             return Ok(());
         }
+        Cmd::Hold { machine, job, minutes, note, server } => {
+            let url = format!("{}/holds", server.trim_end_matches('/'));
+            let body = json!({"machine": machine, "job": job, "minutes": minutes, "note": note});
+            let v: serde_json::Value = tokio::task::spawn_blocking(move || match ureq::post(&url).send_json(body) {
+                Ok(r) => r.into_json().map_err(anyhow::Error::from),
+                Err(ureq::Error::Status(_, r)) => {
+                    let v: serde_json::Value = r.into_json().unwrap_or_default();
+                    Err(anyhow::anyhow!("{}", v["error"].as_str().unwrap_or("refused")))
+                }
+                Err(e) => Err(e.into()),
+            }).await??;
+            println!("{}", v["id"].as_str().unwrap_or(""));
+            return Ok(());
+        }
+        Cmd::Unhold { hold, server } => {
+            let url = format!("{}/holds/{hold}", server.trim_end_matches('/'));
+            tokio::task::spawn_blocking(move || ureq::delete(&url).call()).await??;
+            return Ok(());
+        }
+        Cmd::Holds { server } => {
+            let url = format!("{}/holds", server.trim_end_matches('/'));
+            let v: serde_json::Value = tokio::task::spawn_blocking(move || ureq::get(&url).call()?.into_json().map_err(anyhow::Error::from)).await??;
+            println!("{}", serde_json::to_string_pretty(&v)?);
+            return Ok(());
+        }
         _ => {}
     }
     let cfg = Config::from_file(&cli.config).with_context(|| format!("loading {}", cli.config.display()))?;
@@ -255,7 +347,7 @@ async fn main() -> anyhow::Result<()> {
             for e in &c.errors {
                 eprintln!("signal: {e}");
             }
-            let a = assess(&cfg, &job, &c.snapshot, &[], now())?;
+            let a = assess(&cfg, &job, &c.snapshot, &[], &[], now())?;
             println!("{}", serde_json::to_string_pretty(&a)?);
         }
         Cmd::Signals => {
@@ -267,7 +359,7 @@ async fn main() -> anyhow::Result<()> {
             eprintln!("tasukeai listening on {listen}");
             axum::serve(listener, router(App::new(cfg))).with_graceful_shutdown(shutdown()).await?;
         }
-        Cmd::Health { .. } | Cmd::Pick { .. } | Cmd::Release { .. } => unreachable!(),
+        Cmd::Health { .. } | Cmd::Pick { .. } | Cmd::Release { .. } | Cmd::Hold { .. } | Cmd::Unhold { .. } | Cmd::Holds { .. } => unreachable!(),
     }
     Ok(())
 }
@@ -293,16 +385,20 @@ mod tests {
 priority = 1
 accel = "cuda"
 jobs = { big = 1, many = 2, chat = 1 }
+endpoints = { llm = "http://a/v1" }
 [machines.b]
 priority = 2
 accel = "cuda"
 jobs = { many = 1, chat = 1 }
+endpoints = { llm = "http://b/v1" }
 [jobs.big]
 mode = "exclusive"
 [jobs.many]
 mode = "spread"
+endpoint = "llm"
 [jobs.chat]
 mode = "rank"
+endpoint = "llm"
 "#;
 
     /// The real router on a random port, called over HTTP.
@@ -344,6 +440,40 @@ mode = "rank"
             assert_eq!(call("DELETE", &format!("{base}/leases/{id}")).0, 404);
             assert_eq!(call("POST", &format!("{base}/pick?job=big")).1["machine"], "a");
             assert_eq!(call("POST", &format!("{base}/pick?job=chat")).0, 400, "chat is a rank job");
+        }).await.unwrap();
+    }
+
+    fn send(method: &str, url: &str, body: serde_json::Value) -> (u16, serde_json::Value) {
+        match ureq::request(method, url).send_json(body) {
+            Ok(r) => (r.status(), r.into_json().unwrap_or_default()),
+            Err(ureq::Error::Status(s, r)) => (s, r.into_json().unwrap_or_default()),
+            Err(e) => panic!("{e}"),
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn holds_and_endpoints_over_http() {
+        let base = server().await;
+        tokio::task::spawn_blocking(move || {
+            // leases and rank carry the job's endpoint
+            let (_, v) = call("POST", &format!("{base}/spread?job=many&count=1"));
+            assert_eq!(v["leases"][0]["endpoint"], "http://a/v1");
+            assert!(call("POST", &format!("{base}/pick?job=big")).1["lease"].get("endpoint").is_none(), "big names no endpoint");
+            let (_, v) = call("GET", &format!("{base}/rank?job=chat"));
+            assert_eq!(v["endpoints"], json!(["http://a/v1", "http://b/v1"]));
+            // a hold on a keeps it out of rank, with the note in the reason
+            let (s, h) = send("POST", &format!("{base}/holds"), json!({"machine": "a", "minutes": 60, "note": "game"}));
+            assert_eq!(s, 201);
+            let (_, v) = call("GET", &format!("{base}/rank?job=chat"));
+            assert_eq!(v["machines"], json!(["b"]));
+            assert!(v["assessment"]["rejected"].to_string().contains("held by hand"), "{v}");
+            assert!(v["assessment"]["rejected"].to_string().contains("game"));
+            assert_eq!(call("GET", &format!("{base}/holds")).1.as_array().unwrap().len(), 1);
+            assert_eq!(send("POST", &format!("{base}/holds"), json!({"machine": "nope"})).0, 400);
+            let id = h["id"].as_str().unwrap();
+            assert_eq!(call("DELETE", &format!("{base}/holds/{id}")).0, 204);
+            assert_eq!(call("DELETE", &format!("{base}/holds/{id}")).0, 404);
+            assert_eq!(call("GET", &format!("{base}/rank?job=chat")).1["machines"], json!(["a", "b"]));
         }).await.unwrap();
     }
 }

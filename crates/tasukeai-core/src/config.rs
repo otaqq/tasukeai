@@ -107,6 +107,10 @@ pub struct Machine {
     pub queries: BTreeMap<String, String>,
     #[serde(default)]
     pub checks: Vec<Check>,
+    /// Named addresses of services on this machine, e.g. llm = "http://10.0.0.5:11434/v1". A job that names one gets
+    /// its URL with each lease (and in rank answers), so callers keep no address table of their own.
+    #[serde(default)]
+    pub endpoints: BTreeMap<String, String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -126,6 +130,10 @@ pub struct Job {
     /// How long a lease lasts, in seconds.
     #[serde(default = "default_lease")]
     pub lease_seconds: u64,
+    /// The machine endpoint this job sends its work to (a key of [machines.x.endpoints]); every machine with a slot
+    /// for the job must have it.
+    #[serde(default)]
+    pub endpoint: Option<String>,
 }
 
 fn default_lease() -> u64 {
@@ -187,9 +195,14 @@ impl Config {
 
     fn validate(&self) -> Result<(), ConfigError> {
         for (name, m) in &self.machines {
-            for job in m.jobs.keys() {
-                if !self.jobs.contains_key(job) {
+            for (job, slots) in &m.jobs {
+                let Some(j) = self.jobs.get(job) else {
                     return Err(ConfigError::Invalid(format!("machine {name} lists unknown job {job}")));
+                };
+                if let Some(e) = &j.endpoint {
+                    if *slots > 0 && !m.endpoints.contains_key(e) {
+                        return Err(ConfigError::Invalid(format!("job {job} uses endpoint {e}, which machine {name} does not have")));
+                    }
                 }
             }
             for r in &m.rules {

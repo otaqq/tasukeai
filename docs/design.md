@@ -35,6 +35,8 @@ route to healthy inference servers, but know nothing about the machine's owner. 
 | job kind | What a piece of work needs: accelerators, VRAM, RAM, policy overrides, the mode below. |
 | policy | Rules a machine must pass to take work: per machine (owner rules) and per job (needs). Each failed rule becomes a human-readable reason. |
 | lease | A short reservation tasukeai keeps after handing out a machine, so that the next decision (before metrics catch up, or while the job loads its model) does not hand it out again. Released by the caller or by timeout. |
+| endpoint | A named address of a service on a machine (e.g. `llm` = its OpenAI-compatible base URL). A job names the endpoint it uses; leases and `rank` answers carry its URL, so callers keep no address table of their own (#13, v0.2.0). |
+| hold | A person keeps a machine out by hand, for every job or for some jobs, with an optional end time and a note ("playing a game until 23:00"). Held machines are not offered; the reason says why (#9, v0.2.0). |
 
 ## Modes
 
@@ -44,7 +46,7 @@ route to healthy inference servers, but know nothing about the machine's owner. 
 | `spread` | N copies of the same work in parallel (extraction workers, batch inference) | Fill slots in priority order: each machine has a number of slots for the job kind; returns up to N assignments, each with a lease. Asking again later rebalances to what is free then. |
 | `rank` | Short requests, one at a time (LLM chat completions) | No lease. Returns the usable machines in order. Metrics may be up to a scrape interval old, so `rank` can add quick HTTP checks (e.g. "does the inference server answer within 2 s", "is the GPU busy right now") with a short cache. |
 
-## Interfaces (planned)
+## Interfaces
 
 HTTP (JSON):
 
@@ -55,11 +57,29 @@ HTTP (JSON):
 - `GET /rank?job=<kind>` — `rank`: usable machines in order, no lease.
 - `GET /leases`, `POST /leases/<id>/renew` (long jobs extend their lease), `DELETE /leases/<id>` (the job ended or did
   not start).
+- `POST /holds` (`{"machine", "job"?, "minutes"?, "note"?}`), `GET /holds`, `DELETE /holds/<id>` — holds by hand.
+  Setting a hold does not touch leases already given (they run out or are released; taking them back is #7).
 - Planned: `GET /metrics` — tasukeai's own state for Prometheus (decisions, leases, reasons).
 
 CLI (for scripts and workflow engines): `tasukeai pick <kind> --server URL` prints the machine name and the lease id
 (exit code 75 when none can take it, with the reasons on stderr), `tasukeai release <lease> --server URL`;
-`tasukeai signals` and `tasukeai assess <kind>` decide locally without leases.
+`tasukeai signals` and `tasukeai assess <kind>` decide locally without leases; `tasukeai hold <machine> [--job J]
+[--minutes M] [--note N] --server URL` and `tasukeai unhold <id> --server URL` for holds by hand.
+
+### Admin page (planned)
+
+- A page at `/ui`, served by the same binary from the same HTTP API, so the CLI and the page always agree. Off unless
+  `[ui] enabled = true`.
+- First read-only: machines, signals, why each is not usable, leases, holds. Buttons that change things (hold,
+  release) come after the API has authentication (#2), because anyone who reaches the page could otherwise use them.
+
+### Configuration and state
+
+- **Configuration** (machines, jobs, rules, endpoints) is a file (TOML) and is not edited from the page: it belongs in
+  version control (e.g. a Kubernetes ConfigMap from git), so what runs never drifts from what was reviewed.
+- **State** (leases, holds) is in memory today and lost on restart. Planned: `[state] path = ".../tasukeai.db"` keeps it
+  in SQLite (one file, safe writes); without it, memory as now (#1). The file belongs on a local disk, not NFS
+  (SQLite locking over network file systems is unreliable).
 
 Integrations stay outside the core: a LiteLLM callback that filters deployments with `/rank`, a workflow-engine task
 that calls `pick` and passes the machine on.
@@ -119,6 +139,6 @@ lease = "30m"
 ## Open questions
 
 - Rules: a tiny expression language, or fixed rule kinds with parameters.
-- Leases across restarts: memory only, or a small state file.
+- Leases and holds across restarts: decided, SQLite when `[state] path` is set (see "Configuration and state").
 - Whether `rank` should also learn which machine already has a model loaded (fewer reloads).
 - Power and energy as a rule input (prefer the machine that uses less for the same work).

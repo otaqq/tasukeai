@@ -3,7 +3,7 @@
 //! library caller that collects signals itself.
 
 use crate::config::{Config, Job, Mode, Rule};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
 /// The signals of one machine at a moment: name -> (value, unix seconds when it was measured).
@@ -19,6 +19,35 @@ pub struct Lease {
     pub machine: String,
     pub job: String,
     pub until: u64,
+    /// The URL of the job's endpoint on that machine, when the job names one.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub endpoint: Option<String>,
+}
+
+/// A machine kept out by a person: for every job (job None) or one job, until a time (None: until removed).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct Hold {
+    pub id: String,
+    pub machine: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub job: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub until: Option<u64>,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub note: String,
+}
+
+impl Hold {
+    pub fn active(&self, now: u64) -> bool {
+        self.until.map_or(true, |u| u > now)
+    }
+
+    fn reason(&self) -> String {
+        let job = self.job.as_deref().map(|j| format!(" for {j}")).unwrap_or_default();
+        let until = self.until.map(|u| format!(" until {u}")).unwrap_or_default();
+        let note = if self.note.is_empty() { String::new() } else { format!(": {}", self.note) };
+        format!("held by hand{job}{until}{note}")
+    }
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
@@ -27,6 +56,9 @@ pub struct Candidate {
     pub priority: i64,
     /// Slots left for this job now (after leases).
     pub free_slots: u32,
+    /// The URL of the job's endpoint on this machine, when the job names one.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub endpoint: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
@@ -75,8 +107,9 @@ fn rule_reason(rule: &Rule, signals: &Signals, now: u64, stale_after: u64) -> Op
 }
 
 /// Which machines can take `job` now. Static checks (job installed, accelerator, installed memory) come first, then
-/// leases, then the machine's and the job's rules on the signals; every failed check is a reason.
-pub fn assess(cfg: &Config, job: &str, snap: &Snapshot, leases: &[Lease], now: u64) -> Result<Assessment, DecideError> {
+/// leases and holds by hand, then the machine's and the job's rules on the signals; every failed check is a reason.
+pub fn assess(cfg: &Config, job: &str, snap: &Snapshot, leases: &[Lease], holds: &[Hold], now: u64)
+    -> Result<Assessment, DecideError> {
     let j: &Job = cfg.jobs.get(job).ok_or_else(|| DecideError::UnknownJob(job.to_string()))?;
     let mut machines: Vec<_> = cfg.machines.iter().collect();
     machines.sort_by_key(|(name, m)| (m.priority, (*name).clone()));
@@ -107,6 +140,9 @@ pub fn assess(cfg: &Config, job: &str, snap: &Snapshot, leases: &[Lease], now: u
         if slots > 0 && free_slots == 0 && j.mode != Mode::Rank {
             reasons.push(format!("all {slots} slot(s) leased"));
         }
+        for h in holds.iter().filter(|h| h.active(now) && &h.machine == name && h.job.as_deref().map_or(true, |hj| hj == job)) {
+            reasons.push(h.reason());
+        }
         let signals = snap.get(name).unwrap_or(&empty);
         for rule in m.rules.iter().chain(j.rules.iter()) {
             if let Some(r) = rule_reason(rule, signals, now, cfg.stale_after_seconds) {
@@ -114,7 +150,8 @@ pub fn assess(cfg: &Config, job: &str, snap: &Snapshot, leases: &[Lease], now: u
             }
         }
         if reasons.is_empty() {
-            usable.push(Candidate { machine: name.clone(), priority: m.priority, free_slots });
+            let endpoint = j.endpoint.as_ref().and_then(|e| m.endpoints.get(e)).cloned();
+            usable.push(Candidate { machine: name.clone(), priority: m.priority, free_slots, endpoint });
         } else {
             rejected.push(Rejected { machine: name.clone(), reasons });
         }
@@ -131,18 +168,18 @@ fn expect_mode(cfg: &Config, job: &str, wanted: Mode) -> Result<(), DecideError>
 }
 
 /// `exclusive`: the first usable machine, or None. The caller records a lease for it.
-pub fn pick(cfg: &Config, job: &str, snap: &Snapshot, leases: &[Lease], now: u64)
+pub fn pick(cfg: &Config, job: &str, snap: &Snapshot, leases: &[Lease], holds: &[Hold], now: u64)
     -> Result<(Option<String>, Assessment), DecideError> {
     expect_mode(cfg, job, Mode::Exclusive)?;
-    let a = assess(cfg, job, snap, leases, now)?;
+    let a = assess(cfg, job, snap, leases, holds, now)?;
     Ok((a.usable.first().map(|c| c.machine.clone()), a))
 }
 
 /// `spread`: up to `count` machines (a machine appears once per slot it gives), filling slots in priority order.
-pub fn spread(cfg: &Config, job: &str, count: u32, snap: &Snapshot, leases: &[Lease], now: u64)
+pub fn spread(cfg: &Config, job: &str, count: u32, snap: &Snapshot, leases: &[Lease], holds: &[Hold], now: u64)
     -> Result<(Vec<String>, Assessment), DecideError> {
     expect_mode(cfg, job, Mode::Spread)?;
-    let a = assess(cfg, job, snap, leases, now)?;
+    let a = assess(cfg, job, snap, leases, holds, now)?;
     let mut out = Vec::new();
     for c in &a.usable {
         for _ in 0..c.free_slots {
@@ -155,9 +192,9 @@ pub fn spread(cfg: &Config, job: &str, count: u32, snap: &Snapshot, leases: &[Le
     Ok((out, a))
 }
 
-/// `rank`: the usable machines in order (no lease).
-pub fn rank(cfg: &Config, job: &str, snap: &Snapshot, now: u64) -> Result<(Vec<String>, Assessment), DecideError> {
+/// `rank`: the usable machines in order (no lease; holds by hand still count).
+pub fn rank(cfg: &Config, job: &str, snap: &Snapshot, holds: &[Hold], now: u64) -> Result<(Vec<String>, Assessment), DecideError> {
     expect_mode(cfg, job, Mode::Rank)?;
-    let a = assess(cfg, job, snap, &[], now)?;
+    let a = assess(cfg, job, snap, &[], holds, now)?;
     Ok((a.usable.iter().map(|c| c.machine.clone()).collect(), a))
 }

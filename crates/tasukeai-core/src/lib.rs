@@ -10,7 +10,7 @@ pub mod leases;
 pub use collect::{collect, Collected};
 pub use config::{Check, Config, ConfigError, Job, Machine, Metrics, Mode, Rule};
 pub use leases::Leases;
-pub use decide::{assess, pick, rank, spread, Assessment, Candidate, DecideError, Lease, Rejected, Signals, Snapshot};
+pub use decide::{assess, pick, rank, spread, Assessment, Candidate, DecideError, Hold, Lease, Rejected, Signals, Snapshot};
 
 #[cfg(test)]
 mod tests {
@@ -73,26 +73,26 @@ mode = "rank"
     #[test]
     fn exclusive_takes_the_first_and_respects_leases() {
         let cfg = Config::from_toml(CFG).unwrap();
-        let (m, a) = pick(&cfg, "train", &all_fine(), &[], NOW).unwrap();
+        let (m, a) = pick(&cfg, "train", &all_fine(), &[], &[], NOW).unwrap();
         assert_eq!(m.as_deref(), Some("desk"));
         // mini cannot train: not installed, metal, no VRAM
         let mini = a.rejected.iter().find(|r| r.machine == "mini").unwrap();
         assert!(mini.reasons.iter().any(|r| r.contains("not installed")));
         assert!(mini.reasons.iter().any(|r| r.contains("needs cuda")));
-        let lease = Lease { id: "l1".into(), machine: "desk".into(), job: "train".into(), until: NOW + 100 };
-        let (m, a) = pick(&cfg, "train", &all_fine(), &[lease.clone()], NOW).unwrap();
+        let lease = Lease { id: "l1".into(), machine: "desk".into(), job: "train".into(), until: NOW + 100, endpoint: None };
+        let (m, a) = pick(&cfg, "train", &all_fine(), &[lease.clone()], &[], NOW).unwrap();
         assert_eq!(m, None);
         assert!(a.rejected[0].reasons.iter().any(|r| r.contains("leased")));
         // an expired lease does not count
         let old = Lease { until: NOW - 1, ..lease };
-        assert_eq!(pick(&cfg, "train", &all_fine(), &[old], NOW).unwrap().0.as_deref(), Some("desk"));
+        assert_eq!(pick(&cfg, "train", &all_fine(), &[old], &[], NOW).unwrap().0.as_deref(), Some("desk"));
     }
 
     #[test]
     fn owner_rules_give_reasons() {
         let cfg = Config::from_toml(CFG).unwrap();
         let s = snap(&[("desk", "gpu_temp_celsius", 85.0), ("desk", "idle_seconds", 30.0)]);
-        let (m, a) = pick(&cfg, "train", &s, &[], NOW).unwrap();
+        let (m, a) = pick(&cfg, "train", &s, &[], &[], NOW).unwrap();
         assert_eq!(m, None);
         let desk = &a.rejected.iter().find(|r| r.machine == "desk").unwrap().reasons;
         assert!(desk.contains(&"gpu_temp_celsius = 85 > 80 (hot)".to_string()));
@@ -105,7 +105,7 @@ mode = "rank"
         let mut s = all_fine();
         s.get_mut("laptop").unwrap().insert("on_ac".into(), (1.0, NOW - 500));
         s.remove("mini");
-        let (order, a) = rank(&cfg, "chat", &s, NOW).unwrap();
+        let (order, a) = rank(&cfg, "chat", &s, &[], NOW).unwrap();
         assert_eq!(order, vec!["desk"]);
         let reasons = |m: &str| a.rejected.iter().find(|r| r.machine == m).unwrap().reasons.join("; ");
         assert!(reasons("laptop").contains("stale (500 s old)"));
@@ -115,33 +115,33 @@ mode = "rank"
     #[test]
     fn spread_fills_slots_in_priority_order() {
         let cfg = Config::from_toml(CFG).unwrap();
-        let (got, _) = spread(&cfg, "extract", 3, &all_fine(), &[], NOW).unwrap();
+        let (got, _) = spread(&cfg, "extract", 3, &all_fine(), &[], &[], NOW).unwrap();
         assert_eq!(got, vec!["desk", "desk", "mini"]);
-        let (got, _) = spread(&cfg, "extract", 10, &all_fine(), &[], NOW).unwrap();
+        let (got, _) = spread(&cfg, "extract", 10, &all_fine(), &[], &[], NOW).unwrap();
         assert_eq!(got, vec!["desk", "desk", "mini", "laptop"]);
-        let busy = Lease { id: "x".into(), machine: "desk".into(), job: "extract".into(), until: NOW + 60 };
-        let (got, _) = spread(&cfg, "extract", 10, &all_fine(), &[busy], NOW).unwrap();
+        let busy = Lease { id: "x".into(), machine: "desk".into(), job: "extract".into(), until: NOW + 60, endpoint: None };
+        let (got, _) = spread(&cfg, "extract", 10, &all_fine(), &[busy], &[], NOW).unwrap();
         assert_eq!(got, vec!["desk", "mini", "laptop"]);
     }
 
     #[test]
     fn an_exclusive_lease_holds_the_whole_machine() {
         let cfg = Config::from_toml(CFG).unwrap();
-        let train = Lease { id: "t".into(), machine: "desk".into(), job: "train".into(), until: NOW + 60 };
-        let (got, a) = spread(&cfg, "extract", 10, &all_fine(), &[train.clone()], NOW).unwrap();
+        let train = Lease { id: "t".into(), machine: "desk".into(), job: "train".into(), until: NOW + 60, endpoint: None };
+        let (got, a) = spread(&cfg, "extract", 10, &all_fine(), &[train.clone()], &[], NOW).unwrap();
         assert_eq!(got, vec!["mini", "laptop"]);
         assert!(a.rejected[0].reasons.contains(&"held by train (exclusive)".to_string()));
         // a spread lease does not hold the exclusive job's slot, only its own
-        let ex = Lease { id: "e".into(), machine: "desk".into(), job: "extract".into(), until: NOW + 60 };
-        assert_eq!(pick(&cfg, "train", &all_fine(), &[ex], NOW).unwrap().0.as_deref(), Some("desk"));
+        let ex = Lease { id: "e".into(), machine: "desk".into(), job: "extract".into(), until: NOW + 60, endpoint: None };
+        assert_eq!(pick(&cfg, "train", &all_fine(), &[ex], &[], NOW).unwrap().0.as_deref(), Some("desk"));
         let _ = train;
     }
 
     #[test]
     fn modes_and_config_are_checked() {
         let cfg = Config::from_toml(CFG).unwrap();
-        assert!(matches!(pick(&cfg, "chat", &all_fine(), &[], NOW), Err(DecideError::WrongMode { .. })));
-        assert!(matches!(rank(&cfg, "nope", &all_fine(), NOW), Err(DecideError::UnknownJob(_))));
+        assert!(matches!(pick(&cfg, "chat", &all_fine(), &[], &[], NOW), Err(DecideError::WrongMode { .. })));
+        assert!(matches!(rank(&cfg, "nope", &all_fine(), &[], NOW), Err(DecideError::UnknownJob(_))));
         let bad = CFG.replace("jobs = { extract = 1, chat = 1 }\n\n[machines.laptop]", "jobs = { paint = 1 }\n\n[machines.laptop]");
         assert!(Config::from_toml(&bad).unwrap_err().to_string().contains("unknown job paint"));
     }

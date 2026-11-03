@@ -43,17 +43,30 @@ cargo run -p tasukeai -- --config examples/tasukeai.toml assess train   # who ca
 | `GET /assess?job=<kind>` | usable machines in order, reasons for the others (no lease) |
 | `POST /pick?job=<kind>` | `exclusive`: `{machine, lease, assessment}`; 409 with the reasons when none is free |
 | `POST /spread?job=<kind>&count=N` | `spread`: up to N leases, a machine once per free slot; 409 when none |
-| `GET /rank?job=<kind>` | `rank`: `{machines, assessment}`, no lease |
+| `GET /rank?job=<kind>` | `rank`: `{machines, endpoints, assessment}`, no lease |
 | `GET /leases` | the leases that have not run out |
 | `POST /leases/<id>/renew` | extend a lease by its job's `lease_seconds` |
 | `DELETE /leases/<id>` | give the machine back |
+| `POST /holds` | keep a machine out by hand: `{"machine", "job"?, "minutes"?, "note"?}`; 201 with the hold |
+| `GET /holds` | the holds that have not run out |
+| `DELETE /holds/<id>` | end a hold |
 
 A lease of an `exclusive` job holds the whole machine; a `spread` lease holds one slot of its own job. Decisions and
-leases are taken under one lock, so two callers never get the same slot. Leases live in memory (a restart forgets
-them).
+leases are taken under one lock, so two callers never get the same slot. Leases and holds live in memory (a restart
+forgets them).
+
+**Endpoints.** A machine may name addresses of its services (`endpoints = { llm = "http://desk:11434/v1" }`) and a
+job the one it uses (`endpoint = "llm"`). Each lease then carries `endpoint` (the URL), and `/rank` answers
+`endpoints` in the order of `machines`, so callers need no address table of their own. A job naming an endpoint
+that a machine with a slot for it lacks is a configuration error.
+
+**Holds.** A person keeps a machine out by hand: for every job or one job, until a time or until ended. Held
+machines are not offered by `pick`, `spread` or `rank`; the reason reads `held by hand[ for <job>][ until <time>][:
+<note>]`. Leases already given stay until they run out or are released.
 
 From scripts: `tasukeai pick <kind> --server http://host:9660` prints `machine lease-id`, or the reasons and exits 75
-when none is free; `tasukeai release <lease-id> --server ...` gives it back.
+when none is free; `tasukeai release <lease-id> --server ...` gives it back. `tasukeai hold <machine> [--job J]
+[--minutes M] [--note N] --server ...` prints a hold id, `tasukeai unhold <id>` ends it, `tasukeai holds` lists them.
 
 ## Run with Docker
 
