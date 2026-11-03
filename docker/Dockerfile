@@ -16,6 +16,8 @@ RUN cargo build --release --locked -p tasukeai && cp target/release/tasukeai /bi
 
 FROM gcr.io/distroless/static-debian13:nonroot AS production
 COPY --from=builder /bin/tasukeai /tasukeai
+# The nonroot user of the distroless image, stated so scanners see it
+USER 65532:65532
 EXPOSE 9660
 # distroless has no shell or wget: the binary checks its own /health
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s CMD ["/tasukeai", "health"]
