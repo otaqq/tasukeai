@@ -38,6 +38,17 @@ pub struct Rule {
     /// Shown in the reason when the rule fails, e.g. "someone is using it".
     #[serde(default)]
     pub because: Option<String>,
+    /// Only for these jobs (a machine rule such as "nobody is using it" for long batch work, but not for short chat
+    /// requests). None: every job.
+    #[serde(default)]
+    pub jobs: Option<Vec<String>>,
+}
+
+impl Rule {
+    /// Whether the rule counts for `job`.
+    pub fn applies_to(&self, job: &str) -> bool {
+        self.jobs.as_ref().map_or(true, |js| js.iter().any(|j| j == job))
+    }
 }
 
 /// A quick HTTP check at decision time: the signal is 1 when the URL answers 2xx in time and 0 when it does not; with
@@ -216,7 +227,7 @@ impl Config {
                 }
             }
             for r in &m.rules {
-                check_rule(r, &format!("machine {name}"))?;
+                check_rule(r, &format!("machine {name}"), &self.jobs)?;
             }
             for p in &m.presets {
                 if !self.presets.contains_key(p) {
@@ -226,16 +237,21 @@ impl Config {
         }
         for (name, j) in &self.jobs {
             for r in &j.rules {
-                check_rule(r, &format!("job {name}"))?;
+                check_rule(r, &format!("job {name}"), &self.jobs)?;
             }
         }
         Ok(())
     }
 }
 
-fn check_rule(r: &Rule, at: &str) -> Result<(), ConfigError> {
+fn check_rule(r: &Rule, at: &str, jobs: &BTreeMap<String, Job>) -> Result<(), ConfigError> {
     if r.min.is_none() && r.max.is_none() {
         return Err(ConfigError::Invalid(format!("{at}: rule on {} has neither min nor max", r.signal)));
+    }
+    for j in r.jobs.iter().flatten() {
+        if !jobs.contains_key(j) {
+            return Err(ConfigError::Invalid(format!("{at}: rule on {} names unknown job {j}", r.signal)));
+        }
     }
     Ok(())
 }

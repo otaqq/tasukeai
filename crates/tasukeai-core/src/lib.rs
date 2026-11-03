@@ -10,7 +10,7 @@ pub mod leases;
 pub use collect::{collect, Collected};
 pub use config::{Check, Config, ConfigError, Job, Machine, Metrics, Mode, Rule, State};
 pub use leases::Leases;
-pub use decide::{assess, pick, rank, spread, Assessment, Candidate, DecideError, Hold, Lease, Rejected, Signals, Snapshot};
+pub use decide::{assess, assess_with, pick, rank, rank_with, spread, Assessment, Candidate, DecideError, Hold, Lease, Rejected, Signals, Snapshot};
 
 #[cfg(test)]
 mod tests {
@@ -142,6 +142,40 @@ mode = "rank"
         let cfg = Config::from_toml(CFG).unwrap();
         assert!(matches!(pick(&cfg, "chat", &all_fine(), &[], &[], NOW), Err(DecideError::WrongMode { .. })));
         assert!(matches!(rank(&cfg, "nope", &all_fine(), &[], NOW), Err(DecideError::UnknownJob(_))));
+    }
+
+    #[test]
+    fn rules_for_some_jobs_and_rules_of_the_caller() {
+        let cfg = Config::from_toml(r#"
+[machines.desk]
+priority = 1
+accel = "cuda"
+rules = [{ signal = "idle_seconds", min = 600, because = "someone is using it", jobs = ["extract"] }]
+jobs = { extract = 1, chat = 1 }
+[jobs.extract]
+mode = "spread"
+[jobs.chat]
+mode = "rank"
+"#).unwrap();
+        let mut s = Snapshot::new();
+        s.insert("desk".into(), [("idle_seconds".to_string(), (5.0, NOW)), ("vram_free_gb".to_string(), (6.0, NOW))].into());
+        // someone is using desk: no extract, but chat still goes there
+        assert!(spread(&cfg, "extract", 1, &s, &[], &[], NOW).unwrap().0.is_empty());
+        assert_eq!(rank(&cfg, "chat", &s, &[], NOW).unwrap().0, vec!["desk"]);
+        // a caller's rule for one request: the model needs 10 GB free, desk has 6
+        let need = Rule { signal: "vram_free_gb".into(), min: Some(10.0), max: None, because: Some("asked".into()), jobs: None };
+        let (order, a) = rank_with(&cfg, "chat", &s, &[], &[need.clone()], NOW).unwrap();
+        assert!(order.is_empty() && a.rejected[0].reasons == vec!["vram_free_gb = 6 < 10 (asked)".to_string()]);
+        let fits = Rule { min: Some(4.0), ..need };
+        assert_eq!(rank_with(&cfg, "chat", &s, &[], &[fits], NOW).unwrap().0, vec!["desk"]);
+        // a rule naming a job that does not exist is a configuration error
+        let bad = Config::from_toml(r#"
+[machines.desk]
+priority = 1
+accel = "cuda"
+rules = [{ signal = "up", min = 1, jobs = ["nope"] }]
+"#);
+        assert!(bad.unwrap_err().to_string().contains("unknown job nope"));
         let bad = CFG.replace("jobs = { extract = 1, chat = 1 }\n\n[machines.laptop]", "jobs = { paint = 1 }\n\n[machines.laptop]");
         assert!(Config::from_toml(&bad).unwrap_err().to_string().contains("unknown job paint"));
     }

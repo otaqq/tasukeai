@@ -65,6 +65,10 @@ pub struct Candidate {
 pub struct Rejected {
     pub machine: String,
     pub reasons: Vec<String>,
+    /// The URL of the job's endpoint on this machine, when the job names one: callers that route by address can tell
+    /// a machine left out from one tasukeai does not know.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub endpoint: Option<String>,
 }
 
 /// The usable machines in priority order, and why the others are not.
@@ -110,6 +114,12 @@ fn rule_reason(rule: &Rule, signals: &Signals, now: u64, stale_after: u64) -> Op
 /// leases and holds by hand, then the machine's and the job's rules on the signals; every failed check is a reason.
 pub fn assess(cfg: &Config, job: &str, snap: &Snapshot, leases: &[Lease], holds: &[Hold], now: u64)
     -> Result<Assessment, DecideError> {
+    assess_with(cfg, job, snap, leases, holds, &[], now)
+}
+
+/// `assess` with rules of the caller on top, for this one decision (e.g. the free VRAM a given model needs).
+pub fn assess_with(cfg: &Config, job: &str, snap: &Snapshot, leases: &[Lease], holds: &[Hold], extra: &[Rule], now: u64)
+    -> Result<Assessment, DecideError> {
     let j: &Job = cfg.jobs.get(job).ok_or_else(|| DecideError::UnknownJob(job.to_string()))?;
     let mut machines: Vec<_> = cfg.machines.iter().collect();
     machines.sort_by_key(|(name, m)| (m.priority, (*name).clone()));
@@ -144,16 +154,16 @@ pub fn assess(cfg: &Config, job: &str, snap: &Snapshot, leases: &[Lease], holds:
             reasons.push(h.reason());
         }
         let signals = snap.get(name).unwrap_or(&empty);
-        for rule in m.rules.iter().chain(j.rules.iter()) {
+        for rule in m.rules.iter().filter(|r| r.applies_to(job)).chain(j.rules.iter()).chain(extra.iter()) {
             if let Some(r) = rule_reason(rule, signals, now, cfg.stale_after_seconds) {
                 reasons.push(r);
             }
         }
+        let endpoint = j.endpoint.as_ref().and_then(|e| m.endpoints.get(e)).cloned();
         if reasons.is_empty() {
-            let endpoint = j.endpoint.as_ref().and_then(|e| m.endpoints.get(e)).cloned();
             usable.push(Candidate { machine: name.clone(), priority: m.priority, free_slots, endpoint });
         } else {
-            rejected.push(Rejected { machine: name.clone(), reasons });
+            rejected.push(Rejected { machine: name.clone(), reasons, endpoint });
         }
     }
     Ok(Assessment { job: job.to_string(), usable, rejected })
@@ -194,7 +204,13 @@ pub fn spread(cfg: &Config, job: &str, count: u32, snap: &Snapshot, leases: &[Le
 
 /// `rank`: the usable machines in order (no lease; holds by hand still count).
 pub fn rank(cfg: &Config, job: &str, snap: &Snapshot, holds: &[Hold], now: u64) -> Result<(Vec<String>, Assessment), DecideError> {
+    rank_with(cfg, job, snap, holds, &[], now)
+}
+
+/// `rank` with rules of the caller on top (see `assess_with`).
+pub fn rank_with(cfg: &Config, job: &str, snap: &Snapshot, holds: &[Hold], extra: &[Rule], now: u64)
+    -> Result<(Vec<String>, Assessment), DecideError> {
     expect_mode(cfg, job, Mode::Rank)?;
-    let a = assess(cfg, job, snap, &[], holds, now)?;
+    let a = assess_with(cfg, job, snap, &[], holds, extra, now)?;
     Ok((a.usable.iter().map(|c| c.machine.clone()).collect(), a))
 }

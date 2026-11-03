@@ -40,10 +40,10 @@ cargo run -p tasukeai -- --config examples/tasukeai.toml assess train   # who ca
 |---|---|
 | `GET /health` | `ok` |
 | `GET /machines` | every machine's signals and what could not be collected |
-| `GET /assess?job=<kind>` | usable machines in order, reasons for the others (no lease) |
+| `GET /assess?job=<kind>` | usable machines in order, reasons for the others (no lease); takes rules of the caller like `/rank` |
 | `POST /pick?job=<kind>` | `exclusive`: `{machine, lease, assessment}`; 409 with the reasons when none is free |
 | `POST /spread?job=<kind>&count=N` | `spread`: up to N leases, a machine once per free slot; 409 when none |
-| `GET /rank?job=<kind>` | `rank`: `{machines, endpoints, assessment}`, no lease |
+| `GET /rank?job=<kind>[&min.<signal>=x][&max.<signal>=x]` | `rank`: `{machines, endpoints, assessment}`, no lease |
 | `GET /leases` | the leases that have not run out |
 | `POST /leases/<id>/renew` | extend a lease by its job's `lease_seconds` |
 | `DELETE /leases/<id>` | give the machine back |
@@ -60,6 +60,16 @@ restart keeps them (what ran out meanwhile is dropped).
 job the one it uses (`endpoint = "llm"`). Each lease then carries `endpoint` (the URL), and `/rank` answers
 `endpoints` in the order of `machines`, so callers need no address table of their own. A job naming an endpoint
 that a machine with a slot for it lacks is a configuration error.
+
+**Rules for some jobs.** A rule may name the jobs it is for: `{ signal = "idle_seconds", min = 600, jobs = ["extract",
+"train"] }` keeps long batch work off a machine someone is using, while short chat requests still go there.
+
+**Rules of the caller.** `/rank` and `/assess` take extra rules for one decision as query parameters,
+`min.<signal>=<number>` and `max.<signal>=<number>` (e.g. `min.vram_free_gb=10` for a model that needs 10 GB). Like
+configured rules, a missing or stale signal fails them; the reason ends in `(asked by the caller)`.
+
+**Endpoints of left-out machines.** Rejected machines carry their `endpoint` too, so a caller that routes by address
+(an LLM proxy with a list of servers) can tell "known but not usable now" from "not known to tasukeai".
 
 **Holds.** A person keeps a machine out by hand: for every job or one job, until a time or until ended. Held
 machines are not offered by `pick`, `spread` or `rank`; the reason reads `held by hand[ for <job>][ until <time>][:

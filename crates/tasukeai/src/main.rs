@@ -14,8 +14,26 @@ use axum::{
 use clap::{Parser, Subcommand};
 use serde::Deserialize;
 use serde_json::json;
-use std::{path::PathBuf, sync::{Arc, Mutex}, time::{Instant, SystemTime, UNIX_EPOCH}};
-use tasukeai_core::{assess, collect, rank, Collected, Config, Leases};
+use std::{collections::HashMap, path::PathBuf, sync::{Arc, Mutex}, time::{Instant, SystemTime, UNIX_EPOCH}};
+use tasukeai_core::{assess, assess_with, collect, rank_with, Collected, Config, Leases, Rule};
+
+/// Rules of the caller for one decision, from the query: min.<signal>=<number>, max.<signal>=<number> (e.g. the free
+/// VRAM a model needs: min.vram_free_gb=10). Like configured rules, a missing or stale signal fails them.
+fn caller_rules(params: &HashMap<String, String>) -> Result<Vec<Rule>, String> {
+    let mut out = Vec::new();
+    for (k, v) in params {
+        let (signal, is_min) = match (k.strip_prefix("min."), k.strip_prefix("max.")) {
+            (Some(s), _) => (s, true),
+            (_, Some(s)) => (s, false),
+            _ => continue,
+        };
+        let x: f64 = v.parse().map_err(|_| format!("{k}={v}: not a number"))?;
+        out.push(Rule { signal: signal.to_string(), min: is_min.then_some(x), max: (!is_min).then_some(x),
+                        because: Some("asked by the caller".into()), jobs: None });
+    }
+    out.sort_by(|a, b| a.signal.cmp(&b.signal));
+    Ok(out)
+}
 
 #[derive(Deserialize)]
 struct HoldRequest {
@@ -181,13 +199,17 @@ async fn machines(State(app): State<Arc<App>>) -> Json<serde_json::Value> {
     Json(serde_json::to_value(app.signals().await).unwrap_or_default())
 }
 
-async fn assess_job(State(app): State<Arc<App>>, Query(q): Query<JobQuery>) -> Response {
+async fn assess_job(State(app): State<Arc<App>>, Query(q): Query<JobQuery>, Query(all): Query<HashMap<String, String>>) -> Response {
+    let extra = match caller_rules(&all) {
+        Ok(r) => r,
+        Err(e) => return err(StatusCode::BAD_REQUEST, e),
+    };
     let c = app.signals().await;
     let (leases, holds) = {
         let mut book = app.leases.lock().unwrap();
         (book.active(now()).to_vec(), book.holds(now()).to_vec())
     };
-    match assess(&app.cfg, &q.job, &c.snapshot, &leases, &holds, now()) {
+    match assess_with(&app.cfg, &q.job, &c.snapshot, &leases, &holds, &extra, now()) {
         Ok(a) => Json(a).into_response(),
         Err(e) => err(StatusCode::NOT_FOUND, e),
     }
@@ -231,11 +253,16 @@ async fn spread_job(State(app): State<Arc<App>>, Query(q): Query<JobQuery>) -> R
     }
 }
 
-/// GET /rank?job=: the usable machines in order, no lease (holds count); with the job's endpoint URLs, in the same order.
-async fn rank_job(State(app): State<Arc<App>>, Query(q): Query<JobQuery>) -> Response {
+/// GET /rank?job=[&min.<signal>=x][&max.<signal>=x]: the usable machines in order, no lease (holds count); with the
+/// job's endpoint URLs, in the same order.
+async fn rank_job(State(app): State<Arc<App>>, Query(q): Query<JobQuery>, Query(all): Query<HashMap<String, String>>) -> Response {
+    let extra = match caller_rules(&all) {
+        Ok(r) => r,
+        Err(e) => return err(StatusCode::BAD_REQUEST, e),
+    };
     let c = app.signals().await;
     let holds = app.leases.lock().unwrap().holds(now()).to_vec();
-    match rank(&app.cfg, &q.job, &c.snapshot, &holds, now()) {
+    match rank_with(&app.cfg, &q.job, &c.snapshot, &holds, &extra, now()) {
         Ok((order, a)) => {
             let endpoints: Vec<_> = a.usable.iter().map(|c| c.endpoint.clone()).collect();
             Json(json!({"machines": order, "endpoints": endpoints, "assessment": a})).into_response()
@@ -527,6 +554,20 @@ endpoint = "llm"
     }
 
     #[tokio::test(flavor = "multi_thread")]
+    async fn caller_rules_over_http() {
+        let base = server().await;
+        tokio::task::spawn_blocking(move || {
+            // no machine reports vram_free_gb here: a rule of the caller on it fails closed, with the reason
+            let (s, v) = call("GET", &format!("{base}/rank?job=chat&min.vram_free_gb=10"));
+            assert_eq!((s, v["machines"].clone()), (200, json!([])));
+            assert!(v["assessment"]["rejected"].to_string().contains("vram_free_gb unknown (asked by the caller)"), "{v}");
+            assert_eq!(call("GET", &format!("{base}/assess?job=chat&max.gpu_temp_celsius=80")).1["usable"], json!([]));
+            assert_eq!(call("GET", &format!("{base}/rank?job=chat&min.vram_free_gb=lots")).0, 400);
+            assert_eq!(call("GET", &format!("{base}/rank?job=chat")).1["machines"], json!(["a", "b"]), "without them as before");
+        }).await.unwrap();
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
     async fn holds_and_endpoints_over_http() {
         let base = server().await;
         tokio::task::spawn_blocking(move || {
@@ -542,6 +583,7 @@ endpoint = "llm"
             let (_, v) = call("GET", &format!("{base}/rank?job=chat"));
             assert_eq!(v["machines"], json!(["b"]));
             assert!(v["assessment"]["rejected"].to_string().contains("held by hand"), "{v}");
+            assert_eq!(v["assessment"]["rejected"][0]["endpoint"], "http://a/v1", "left-out machines show their endpoint too");
             assert!(v["assessment"]["rejected"].to_string().contains("game"));
             assert_eq!(call("GET", &format!("{base}/holds")).1.as_array().unwrap().len(), 1);
             assert_eq!(send("POST", &format!("{base}/holds"), json!({"machine": "nope"})).0, 400);
