@@ -117,7 +117,8 @@ tasukeai is small enough for edge devices. Measured on one instance in Kubernete
 | Working set | 0.75 MiB | 1.24 MiB |
 | CPU | about 0.012 cores | |
 
-The binary is static (musl), so it needs no libc or other files on the host. Memory grows with the number of
+The binary is static (musl), so it needs no libc or other files on the host. In v0.4.1 it is 6.6 MiB on x86_64
+and 6.5 MiB on aarch64 (2.6 MiB as `.tar.gz`). Memory grows with the number of
 machines, jobs, leases and holds; the numbers above are for a small setup, not a limit. Requests of `32Mi` memory and
 `10m` CPU, with a `128Mi` memory limit, leave plenty of headroom.
 
