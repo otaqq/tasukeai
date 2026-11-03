@@ -19,7 +19,9 @@ cargo run -p tasukeai -- --config examples/tasukeai.toml assess train   # who ca
 ## CI
 
 CI runs the same three checks on every push to `main` and every pull request (`.github/workflows/ci.yml`), builds
-the image and runs it once, and on GitHub repeats the tests and the image on native arm64.
+the image and runs it once, and on GitHub repeats the tests and the image on native arm64. The Helm chart is linted
+and rendered with every optional part on (`charts/tasukeai/ci/test-values.yaml`), the result validated with
+kubeconform, and the chart's `version` and `appVersion` must match `Cargo.toml`: bump all three together.
 
 `.github/workflows/security.yml` scans on pushes, pull requests and weekly: Trivy on the image and the repository
 (vulnerabilities, misconfigurations, secrets; HIGH and CRITICAL with a fix) and `cargo audit` on `Cargo.lock`. On
@@ -37,9 +39,12 @@ flowchart LR
     v -- yes --> b2["aarch64 runner:<br/>test + static build"]
     b1 --> img["multi-arch image on ghcr.io<br/>(same binaries, no emulation)"]
     b2 --> img
+    img --> chart["Helm chart on ghcr.io<br/>oci://ghcr.io/otaqq/charts"]
     b1 --> rel["GitHub Release<br/>tar.gz + SHA256SUMS"]
     b2 --> rel
+    chart --> rel
 ```
 
 The binaries are built in the `builder` stage of `docker/Dockerfile`; the `release` stage puts them into the image,
-with provenance and an SBOM (tags `1.2.3`, `1.2` and `latest`; a pre-release only its own version).
+with provenance and an SBOM (tags `1.2.3`, `1.2` and `latest`; a pre-release only its own version). The chart is
+pushed after the image, so it never points at an image that is not there yet, and the GitHub Release comes last.

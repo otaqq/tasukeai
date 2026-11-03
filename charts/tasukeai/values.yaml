@@ -1,0 +1,104 @@
+# tasukeai runs as one Pod on purpose: leases are handed out under a lock inside the process, so a second replica
+# would hand out the same slot again. The chart has no replica count and updates with the Recreate strategy.
+
+image:
+  repository: ghcr.io/otaqq/tasukeai
+  # Default: the chart's appVersion
+  tag: ""
+  pullPolicy: IfNotPresent
+
+imagePullSecrets: []
+nameOverride: ""
+fullnameOverride: ""
+
+# The configuration file (TOML), see docs/configuration.md. Required unless existingConfigMap is set.
+# With persistence.enabled, set `[state] path = "/data/state.json"` so leases and holds survive a restart.
+config: ""
+#  [state]
+#  path = "/data/state.json"
+#
+#  [metrics]
+#  url = "http://prometheus-server.monitoring:80"
+#
+#  [machines.desk]
+#  priority = 1
+#  accel = "cuda"
+#  presets = ["node"]
+#  rules = [{ signal = "up", min = 1 }]
+#  jobs = { train = 1 }
+#
+#  [jobs.train]
+#  mode = "exclusive"
+
+# Use a ConfigMap you manage instead of `config` (key: tasukeai.toml)
+existingConfigMap: ""
+
+# A volume at /data for `[state] path` (leases and holds across restarts). The file is a few KiB.
+persistence:
+  enabled: false
+  existingClaim: ""
+  # "" uses the cluster's default StorageClass
+  storageClass: ""
+  accessModes:
+    - ReadWriteOnce
+  size: 10Mi
+
+service:
+  type: ClusterIP
+  port: 9660
+
+# The HTTP API has no authentication yet: expose it only to networks you trust
+ingress:
+  enabled: false
+  className: ""
+  annotations: {}
+  hosts:
+    - host: tasukeai.example.com
+      paths:
+        - path: /
+          pathType: Prefix
+  tls: []
+  #  - secretName: tasukeai-tls
+  #    hosts:
+  #      - tasukeai.example.com
+
+# Measured use is under 2 MiB of memory and about 0.01 cores (docs/deployment.md)
+resources:
+  requests:
+    cpu: 10m
+    memory: 32Mi
+  limits:
+    memory: 128Mi
+
+podSecurityContext:
+  runAsUser: 65532
+  runAsGroup: 65532
+  fsGroup: 65532
+  runAsNonRoot: true
+  seccompProfile:
+    type: RuntimeDefault
+
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop: ["ALL"]
+
+readinessProbe:
+  httpGet:
+    path: /health
+    port: http
+  periodSeconds: 10
+
+livenessProbe:
+  httpGet:
+    path: /health
+    port: http
+  periodSeconds: 30
+
+podAnnotations: {}
+podLabels: {}
+priorityClassName: ""
+nodeSelector: {}
+tolerations: []
+affinity: {}

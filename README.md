@@ -52,7 +52,7 @@ curl -s -X POST 'localhost:9660/pick?job=train'
 |---|---|
 | [Configuration](docs/configuration.md) | signals, machines, jobs, rules, how a decision is made |
 | [HTTP API and CLI](docs/api.md) | calls, leases, endpoints, holds, scripts |
-| [Deployment](docs/deployment.md) | binary, Docker, footprint |
+| [Deployment](docs/deployment.md) | binary, Docker, Kubernetes (Helm), footprint |
 | [Development](docs/development.md) | building, CI, releases |
 | [Design notes](docs/design.md) | why, concepts, open questions |
 

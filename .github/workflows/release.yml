@@ -1,7 +1,8 @@
 name: release
 
 # On a version tag (v1.2.3, v1.2.3-rc.1): static musl binaries for x86_64 and aarch64, a multi-arch image on ghcr.io
-# holding the same binaries, and a GitHub Release with the archives and SHA256SUMS. GitHub only.
+# holding the same binaries, the Helm chart on ghcr.io, and a GitHub Release with the archives and SHA256SUMS.
+# GitHub only.
 on:
   push:
     tags: ["v*.*.*"]
@@ -89,9 +90,33 @@ jobs:
           provenance: mode=max
           sbom: true
 
+  # The Helm chart as an OCI artifact: oci://ghcr.io/<owner>/charts/tasukeai, the same version as the image
+  chart:
+    if: github.server_url == 'https://github.com'
+    needs: image
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v7
+      - uses: azure/setup-helm@v4
+      - name: The chart matches the tag
+        run: |
+          v=${GITHUB_REF_NAME#v}
+          grep -qx "version: $v" charts/tasukeai/Chart.yaml
+          grep -qx "appVersion: \"$v\"" charts/tasukeai/Chart.yaml
+      - name: Package and push
+        env:
+          TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          echo "$TOKEN" | helm registry login ghcr.io -u "${{ github.actor }}" --password-stdin
+          helm package charts/tasukeai
+          helm push tasukeai-${GITHUB_REF_NAME#v}.tgz "oci://ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/charts"
+
   release:
     if: github.server_url == 'https://github.com'
-    needs: [binaries, image]
+    needs: [binaries, image, chart]
     runs-on: ubuntu-latest
     permissions:
       contents: write

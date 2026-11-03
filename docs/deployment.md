@@ -36,6 +36,75 @@ instead. Without Compose:
 The image reads `/tasukeai.toml` and runs `serve`. With `[state] path = "/data/state.json"`, mount a writable
 volume at `/data` owned by uid 65532.
 
+## Kubernetes
+
+The Helm chart in [charts/tasukeai](../charts/tasukeai) is published with each release (from v0.5.0) at
+`oci://ghcr.io/otaqq/charts/tasukeai`, with the same version as the image. It works the same on k3s and other small
+clusters at the edge.
+
+```sh
+cat > values.yaml <<'EOF'
+config: |
+  [state]
+  path = "/data/state.json"
+
+  [metrics]
+  url = "http://prometheus-server.monitoring:80"
+
+  [machines.desk]
+  priority = 1
+  accel = "cuda"
+  presets = ["node"]
+  rules = [{ signal = "up", min = 1 }]
+  jobs = { train = 1 }
+
+  [jobs.train]
+  mode = "exclusive"
+persistence:
+  enabled: true
+EOF
+helm install tasukeai oci://ghcr.io/otaqq/charts/tasukeai --version 0.5.0 -n tasukeai --create-namespace -f values.yaml
+```
+
+```mermaid
+flowchart LR
+    subgraph ns["namespace tasukeai"]
+        cm["ConfigMap<br/>tasukeai.toml"]
+        pod["Pod (one replica, Recreate)<br/>uid 65532, read-only root"]
+        pvc[("PVC 10Mi<br/>/data/state.json")]
+        svc["Service :9660"]
+        ing["Ingress (optional)"]
+    end
+    prom[("Prometheus-compatible store")]
+    callers["callers in or out of the cluster"]
+
+    cm -- "/tasukeai.toml" --> pod
+    pvc -- "/data" --> pod
+    svc --> pod
+    ing --> svc
+    pod -- "PromQL" --> prom
+    callers --> svc
+```
+
+What the chart does, and why:
+
+- **One replica, `Recreate`.** There is no replica count: a second Pod would hand out the same slots (see above). On
+  an update the old Pod stops before the new one starts, so the state file has one writer.
+- **Configuration.** `config` holds the TOML and becomes a ConfigMap; `existingConfigMap` uses one you manage (key
+  `tasukeai.toml`). The process reads it only on start, so a change of `config` restarts the Pod (a checksum
+  annotation). With `existingConfigMap`, restart it yourself.
+- **State.** `persistence.enabled` adds a PVC at `/data` (`10Mi`; the file is a few KiB). Set `[state] path =
+  "/data/state.json"` in the configuration, or leases and holds stay in memory. The PVC is kept on `helm uninstall`
+  (`helm.sh/resource-policy: keep`), so installing again brings the leases and holds back.
+- **Security.** Non-root uid 65532, read-only root file system, no capabilities, RuntimeDefault seccomp, no service
+  account token. The HTTP API has no authentication yet (#2); enable the Ingress only for networks you trust.
+- **Resources.** Requests `10m` CPU and `32Mi`, limit `128Mi` memory, far above the measured use (below).
+
+Other values: `image`, `service`, `ingress`, `resources`, probes, `nodeSelector`, `tolerations`, `affinity`,
+`priorityClassName`, `podAnnotations`, `podLabels` (see [values.yaml](../charts/tasukeai/values.yaml)).
+
+Without Helm, the same objects as plain manifests: `helm template tasukeai charts/tasukeai -f values.yaml`.
+
 ## Footprint
 
 tasukeai is small enough for edge devices. Measured on one instance in Kubernetes under light load, over 7 days

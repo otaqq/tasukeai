@@ -1,0 +1,17 @@
+apiVersion: v2
+name: tasukeai
+description: Tells which machine should take a piece of work now, from the metrics the machines already export
+type: application
+# Both follow the version in Cargo.toml; release.yml checks that they match the tag
+version: 0.5.0
+appVersion: "0.5.0"
+home: https://github.com/otaqq/tasukeai
+sources:
+  - https://github.com/otaqq/tasukeai
+annotations:
+  artifacthub.io/license: MIT
+keywords:
+  - scheduling
+  - prometheus
+  - edge
+  - gpu

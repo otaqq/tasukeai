@@ -1,0 +1,11 @@
+tasukeai {{ .Values.image.tag | default .Chart.AppVersion }} runs as one Pod (leases are kept inside the process).
+
+  kubectl -n {{ .Release.Namespace }} port-forward svc/{{ include "tasukeai.fullname" . }} {{ .Values.service.port }}
+  curl -s localhost:{{ .Values.service.port }}/machines
+  curl -s 'localhost:{{ .Values.service.port }}/assess?job=<job>'
+
+{{- if and .Values.persistence.enabled .Values.config (not (contains "/data/" .Values.config)) }}
+
+Note: persistence is enabled, but the configuration does not seem to set `[state] path = "/data/state.json"`;
+without it leases and holds stay in memory only.
+{{- end }}

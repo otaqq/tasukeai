@@ -34,6 +34,27 @@ jobs:
       - run: docker build -f docker/Dockerfile --target production -t tasukeai:ci .
       - run: docker run --rm tasukeai:ci --version
 
+  # The Helm chart: lint, render with every optional part on (ci/test-values.yaml), validate against the Kubernetes
+  # schemas, and check that the chart follows the version in Cargo.toml
+  chart:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: azure/setup-helm@v4
+      - name: kubeconform
+        run: |
+          mkdir -p "$HOME/.local/bin"
+          curl -fsSL https://github.com/yannh/kubeconform/releases/download/v0.8.0/kubeconform-linux-amd64.tar.gz \
+            | tar -xz -C "$HOME/.local/bin" kubeconform
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+      - name: Versions match
+        run: |
+          v=$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -n 1)
+          grep -qx "version: $v" charts/tasukeai/Chart.yaml
+          grep -qx "appVersion: \"$v\"" charts/tasukeai/Chart.yaml
+      - run: helm lint charts/tasukeai -f charts/tasukeai/ci/test-values.yaml --strict
+      - run: helm template t charts/tasukeai -f charts/tasukeai/ci/test-values.yaml | kubeconform -strict -summary
+
   # Native arm64: tests and the image. GitHub only. Some other CI services hand the job to a runner first and evaluate
   # its `if` there, so outside GitHub it asks for a common label: an arm64 label no runner has would keep the run
   # waiting forever.

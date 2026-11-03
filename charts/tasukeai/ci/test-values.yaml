@@ -1,0 +1,24 @@
+# Values for `helm lint` / `helm template` in CI: every optional part on
+config: |
+  [state]
+  path = "/data/state.json"
+
+  [machines.desk]
+  priority = 1
+  accel = "cpu"
+  checks = [{ signal = "up", url = "http://127.0.0.1:9660/health", timeout_ms = 1000 }]
+  rules = [{ signal = "up", min = 1 }]
+  jobs = { train = 1 }
+
+  [jobs.train]
+  mode = "exclusive"
+persistence:
+  enabled: true
+ingress:
+  enabled: true
+  className: nginx
+  hosts:
+    - host: tasukeai.example.com
+      paths:
+        - path: /
+          pathType: Prefix
