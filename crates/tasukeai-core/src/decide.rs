@@ -45,7 +45,11 @@ impl Hold {
     fn reason(&self) -> String {
         let job = self.job.as_deref().map(|j| format!(" for {j}")).unwrap_or_default();
         let until = self.until.map(|u| format!(" until {u}")).unwrap_or_default();
-        let note = if self.note.is_empty() { String::new() } else { format!(": {}", self.note) };
+        let note = if self.note.is_empty() {
+            String::new()
+        } else {
+            format!(": {}", self.note)
+        };
         format!("held by hand{job}{until}{note}")
     }
 }
@@ -91,9 +95,11 @@ fn rule_reason(rule: &Rule, signals: &Signals, now: u64, stale_after: u64) -> Op
     let because = rule.because.as_deref().map(|b| format!(" ({b})")).unwrap_or_default();
     match signals.get(&rule.signal) {
         None => Some(format!("{} unknown{because}", rule.signal)),
-        Some((_, at)) if now.saturating_sub(*at) > stale_after => {
-            Some(format!("{} stale ({} s old){because}", rule.signal, now.saturating_sub(*at)))
-        }
+        Some((_, at)) if now.saturating_sub(*at) > stale_after => Some(format!(
+            "{} stale ({} s old){because}",
+            rule.signal,
+            now.saturating_sub(*at)
+        )),
         Some((v, _)) => {
             if let Some(min) = rule.min {
                 if *v < min {
@@ -112,15 +118,31 @@ fn rule_reason(rule: &Rule, signals: &Signals, now: u64, stale_after: u64) -> Op
 
 /// Which machines can take `job` now. Static checks (job installed, accelerator, installed memory) come first, then
 /// leases and holds by hand, then the machine's and the job's rules on the signals; every failed check is a reason.
-pub fn assess(cfg: &Config, job: &str, snap: &Snapshot, leases: &[Lease], holds: &[Hold], now: u64)
-    -> Result<Assessment, DecideError> {
+pub fn assess(
+    cfg: &Config,
+    job: &str,
+    snap: &Snapshot,
+    leases: &[Lease],
+    holds: &[Hold],
+    now: u64,
+) -> Result<Assessment, DecideError> {
     assess_with(cfg, job, snap, leases, holds, &[], now)
 }
 
 /// `assess` with rules of the caller on top, for this one decision (e.g. the free VRAM a given model needs).
-pub fn assess_with(cfg: &Config, job: &str, snap: &Snapshot, leases: &[Lease], holds: &[Hold], extra: &[Rule], now: u64)
-    -> Result<Assessment, DecideError> {
-    let j: &Job = cfg.jobs.get(job).ok_or_else(|| DecideError::UnknownJob(job.to_string()))?;
+pub fn assess_with(
+    cfg: &Config,
+    job: &str,
+    snap: &Snapshot,
+    leases: &[Lease],
+    holds: &[Hold],
+    extra: &[Rule],
+    now: u64,
+) -> Result<Assessment, DecideError> {
+    let j: &Job = cfg
+        .jobs
+        .get(job)
+        .ok_or_else(|| DecideError::UnknownJob(job.to_string()))?;
     let mut machines: Vec<_> = cfg.machines.iter().collect();
     machines.sort_by_key(|(name, m)| (m.priority, (*name).clone()));
     let empty = Signals::new();
@@ -142,7 +164,10 @@ pub fn assess_with(cfg: &Config, job: &str, snap: &Snapshot, leases: &[Lease], h
         }
         let live: Vec<&Lease> = leases.iter().filter(|l| &l.machine == name && l.until > now).collect();
         // A lease of an exclusive job holds the whole machine; other leases hold slots of their own job only.
-        if let Some(l) = live.iter().find(|l| l.job != job && cfg.jobs.get(&l.job).map(|o| o.mode) == Some(Mode::Exclusive)) {
+        if let Some(l) = live
+            .iter()
+            .find(|l| l.job != job && cfg.jobs.get(&l.job).map(|o| o.mode) == Some(Mode::Exclusive))
+        {
             reasons.push(format!("held by {} (exclusive)", l.job));
         }
         let held = live.iter().filter(|l| l.job == job).count() as u32;
@@ -150,44 +175,87 @@ pub fn assess_with(cfg: &Config, job: &str, snap: &Snapshot, leases: &[Lease], h
         if slots > 0 && free_slots == 0 && j.mode != Mode::Rank {
             reasons.push(format!("all {slots} slot(s) leased"));
         }
-        for h in holds.iter().filter(|h| h.active(now) && &h.machine == name && h.job.as_deref().map_or(true, |hj| hj == job)) {
+        for h in holds
+            .iter()
+            .filter(|h| h.active(now) && &h.machine == name && h.job.as_deref().map_or(true, |hj| hj == job))
+        {
             reasons.push(h.reason());
         }
         let signals = snap.get(name).unwrap_or(&empty);
-        for rule in m.rules.iter().filter(|r| r.applies_to(job)).chain(j.rules.iter()).chain(extra.iter()) {
+        for rule in m
+            .rules
+            .iter()
+            .filter(|r| r.applies_to(job))
+            .chain(j.rules.iter())
+            .chain(extra.iter())
+        {
             if let Some(r) = rule_reason(rule, signals, now, cfg.stale_after_seconds) {
                 reasons.push(r);
             }
         }
         let endpoint = j.endpoint.as_ref().and_then(|e| m.endpoints.get(e)).cloned();
         if reasons.is_empty() {
-            usable.push(Candidate { machine: name.clone(), priority: m.priority, free_slots, endpoint });
+            usable.push(Candidate {
+                machine: name.clone(),
+                priority: m.priority,
+                free_slots,
+                endpoint,
+            });
         } else {
-            rejected.push(Rejected { machine: name.clone(), reasons, endpoint });
+            rejected.push(Rejected {
+                machine: name.clone(),
+                reasons,
+                endpoint,
+            });
         }
     }
-    Ok(Assessment { job: job.to_string(), usable, rejected })
+    Ok(Assessment {
+        job: job.to_string(),
+        usable,
+        rejected,
+    })
 }
 
 fn expect_mode(cfg: &Config, job: &str, wanted: Mode) -> Result<(), DecideError> {
-    let mode = cfg.jobs.get(job).ok_or_else(|| DecideError::UnknownJob(job.to_string()))?.mode;
+    let mode = cfg
+        .jobs
+        .get(job)
+        .ok_or_else(|| DecideError::UnknownJob(job.to_string()))?
+        .mode;
     if mode != wanted {
-        return Err(DecideError::WrongMode { job: job.to_string(), mode, wanted });
+        return Err(DecideError::WrongMode {
+            job: job.to_string(),
+            mode,
+            wanted,
+        });
     }
     Ok(())
 }
 
 /// `exclusive`: the first usable machine, or None. The caller records a lease for it.
-pub fn pick(cfg: &Config, job: &str, snap: &Snapshot, leases: &[Lease], holds: &[Hold], now: u64)
-    -> Result<(Option<String>, Assessment), DecideError> {
+pub fn pick(
+    cfg: &Config,
+    job: &str,
+    snap: &Snapshot,
+    leases: &[Lease],
+    holds: &[Hold],
+    now: u64,
+) -> Result<(Option<String>, Assessment), DecideError> {
     expect_mode(cfg, job, Mode::Exclusive)?;
     let a = assess(cfg, job, snap, leases, holds, now)?;
     Ok((a.usable.first().map(|c| c.machine.clone()), a))
 }
 
 /// `spread`: up to `count` machines (a machine appears once per slot it gives), filling slots in priority order.
-pub fn spread(cfg: &Config, job: &str, count: u32, snap: &Snapshot, leases: &[Lease], holds: &[Hold], now: u64)
-    -> Result<(Vec<String>, Assessment), DecideError> {
+pub fn spread(
+    cfg: &Config,
+    job: &str,
+    count: u32,
+    snap: &Snapshot,
+    leases: &[Lease],
+    holds: &[Hold],
+    now: u64,
+) -> Result<(Vec<String>, Assessment), DecideError> {
     expect_mode(cfg, job, Mode::Spread)?;
     let a = assess(cfg, job, snap, leases, holds, now)?;
     let mut out = Vec::new();
@@ -203,13 +271,25 @@ pub fn spread(cfg: &Config, job: &str, count: u32, snap: &Snapshot, leases: &[Le
 }
 
 /// `rank`: the usable machines in order (no lease; holds by hand still count).
-pub fn rank(cfg: &Config, job: &str, snap: &Snapshot, holds: &[Hold], now: u64) -> Result<(Vec<String>, Assessment), DecideError> {
+pub fn rank(
+    cfg: &Config,
+    job: &str,
+    snap: &Snapshot,
+    holds: &[Hold],
+    now: u64,
+) -> Result<(Vec<String>, Assessment), DecideError> {
     rank_with(cfg, job, snap, holds, &[], now)
 }
 
 /// `rank` with rules of the caller on top (see `assess_with`).
-pub fn rank_with(cfg: &Config, job: &str, snap: &Snapshot, holds: &[Hold], extra: &[Rule], now: u64)
-    -> Result<(Vec<String>, Assessment), DecideError> {
+pub fn rank_with(
+    cfg: &Config,
+    job: &str,
+    snap: &Snapshot,
+    holds: &[Hold],
+    extra: &[Rule],
+    now: u64,
+) -> Result<(Vec<String>, Assessment), DecideError> {
     expect_mode(cfg, job, Mode::Rank)?;
     let a = assess_with(cfg, job, snap, &[], holds, extra, now)?;
     Ok((a.usable.iter().map(|c| c.machine.clone()).collect(), a))

@@ -14,7 +14,12 @@ use axum::{
 use clap::{Parser, Subcommand};
 use serde::Deserialize;
 use serde_json::json;
-use std::{collections::HashMap, path::PathBuf, sync::{Arc, Mutex}, time::{Instant, SystemTime, UNIX_EPOCH}};
+use std::{
+    collections::HashMap,
+    path::PathBuf,
+    sync::{Arc, Mutex},
+    time::{Instant, SystemTime, UNIX_EPOCH},
+};
 use tasukeai_core::{assess, assess_with, collect, rank_with, Collected, Config, Leases, Rule};
 
 /// Rules of the caller for one decision, from the query: min.<signal>=<number>, max.<signal>=<number> (e.g. the free
@@ -28,8 +33,13 @@ fn caller_rules(params: &HashMap<String, String>) -> Result<Vec<Rule>, String> {
             _ => continue,
         };
         let x: f64 = v.parse().map_err(|_| format!("{k}={v}: not a number"))?;
-        out.push(Rule { signal: signal.to_string(), min: is_min.then_some(x), max: (!is_min).then_some(x),
-                        because: Some("asked by the caller".into()), jobs: None });
+        out.push(Rule {
+            signal: signal.to_string(),
+            min: is_min.then_some(x),
+            max: (!is_min).then_some(x),
+            because: Some("asked by the caller".into()),
+            jobs: None,
+        });
     }
     out.sort_by(|a, b| a.signal.cmp(&b.signal));
     Ok(out)
@@ -50,7 +60,11 @@ struct HoldRequest {
 const NONE_FREE: i32 = 75;
 
 #[derive(Parser)]
-#[command(name = "tasukeai", version, about = "Tell which machine should take a piece of work now")]
+#[command(
+    name = "tasukeai",
+    version,
+    about = "Tell which machine should take a piece of work now"
+)]
 struct Cli {
     /// Configuration file (TOML)
     #[arg(long, short, default_value = "tasukeai.toml", global = true)]
@@ -126,12 +140,19 @@ fn health_check(addr: &str) -> anyhow::Result<()> {
     let mut buf = [0u8; 64];
     let n = s.read(&mut buf)?;
     let head = String::from_utf8_lossy(&buf[..n]);
-    anyhow::ensure!(head.starts_with("HTTP/1.0 200") || head.starts_with("HTTP/1.1 200"), "unhealthy: {}", head.lines().next().unwrap_or(""));
+    anyhow::ensure!(
+        head.starts_with("HTTP/1.0 200") || head.starts_with("HTTP/1.1 200"),
+        "unhealthy: {}",
+        head.lines().next().unwrap_or("")
+    );
     Ok(())
 }
 
 fn now() -> u64 {
-    SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0)
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
 }
 
 struct App {
@@ -149,7 +170,12 @@ impl App {
             Some(p) => Leases::load(p, now()).with_context(|| format!("loading the state file {}", p.display()))?,
             None => Leases::new(),
         };
-        Ok(Arc::new(App { cfg, cache: Mutex::new(None), leases: Mutex::new(book), state }))
+        Ok(Arc::new(App {
+            cfg,
+            cache: Mutex::new(None),
+            leases: Mutex::new(book),
+            state,
+        }))
     }
 
     /// Save the book after a change (under its lock, so saves never interleave). A failed save is logged: the change
@@ -170,7 +196,9 @@ impl App {
             }
         }
         let app = self.clone();
-        let fresh = tokio::task::spawn_blocking(move || collect(&app.cfg, now())).await.unwrap_or_default();
+        let fresh = tokio::task::spawn_blocking(move || collect(&app.cfg, now()))
+            .await
+            .unwrap_or_default();
         *self.cache.lock().unwrap() = Some((Instant::now(), fresh.clone()));
         fresh
     }
@@ -199,7 +227,11 @@ async fn machines(State(app): State<Arc<App>>) -> Json<serde_json::Value> {
     Json(serde_json::to_value(app.signals().await).unwrap_or_default())
 }
 
-async fn assess_job(State(app): State<Arc<App>>, Query(q): Query<JobQuery>, Query(all): Query<HashMap<String, String>>) -> Response {
+async fn assess_job(
+    State(app): State<Arc<App>>,
+    Query(q): Query<JobQuery>,
+    Query(all): Query<HashMap<String, String>>,
+) -> Response {
     let extra = match caller_rules(&all) {
         Ok(r) => r,
         Err(e) => return err(StatusCode::BAD_REQUEST, e),
@@ -246,7 +278,11 @@ async fn spread_job(State(app): State<Arc<App>>, Query(q): Query<JobQuery>) -> R
     };
     match result {
         Ok((ls, a)) => {
-            let status = if ls.is_empty() { StatusCode::CONFLICT } else { StatusCode::OK };
+            let status = if ls.is_empty() {
+                StatusCode::CONFLICT
+            } else {
+                StatusCode::OK
+            };
             (status, Json(json!({"leases": ls, "assessment": a}))).into_response()
         }
         Err(e) => err(StatusCode::BAD_REQUEST, e),
@@ -255,7 +291,11 @@ async fn spread_job(State(app): State<Arc<App>>, Query(q): Query<JobQuery>) -> R
 
 /// GET /rank?job=[&min.<signal>=x][&max.<signal>=x]: the usable machines in order, no lease (holds count); with the
 /// job's endpoint URLs, in the same order.
-async fn rank_job(State(app): State<Arc<App>>, Query(q): Query<JobQuery>, Query(all): Query<HashMap<String, String>>) -> Response {
+async fn rank_job(
+    State(app): State<Arc<App>>,
+    Query(q): Query<JobQuery>,
+    Query(all): Query<HashMap<String, String>>,
+) -> Response {
     let extra = match caller_rules(&all) {
         Ok(r) => r,
         Err(e) => return err(StatusCode::BAD_REQUEST, e),
@@ -345,13 +385,22 @@ fn pick_remote(server: &str, job: &str) -> anyhow::Result<()> {
     match ureq::post(&url).query("job", job).call() {
         Ok(r) => {
             let v: serde_json::Value = r.into_json()?;
-            println!("{} {}", v["machine"].as_str().unwrap_or(""), v["lease"]["id"].as_str().unwrap_or(""));
+            println!(
+                "{} {}",
+                v["machine"].as_str().unwrap_or(""),
+                v["lease"]["id"].as_str().unwrap_or("")
+            );
             Ok(())
         }
         Err(ureq::Error::Status(409, r)) => {
             let v: serde_json::Value = r.into_json().unwrap_or_default();
             for rej in v["assessment"]["rejected"].as_array().into_iter().flatten() {
-                let reasons: Vec<&str> = rej["reasons"].as_array().into_iter().flatten().filter_map(|x| x.as_str()).collect();
+                let reasons: Vec<&str> = rej["reasons"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|x| x.as_str())
+                    .collect();
                 eprintln!("{}: {}", rej["machine"].as_str().unwrap_or(""), reasons.join("; "));
             }
             std::process::exit(NONE_FREE)
@@ -375,7 +424,13 @@ async fn main() -> anyhow::Result<()> {
             tokio::task::spawn_blocking(move || ureq::delete(&url).call()).await??;
             return Ok(());
         }
-        Cmd::Hold { machine, job, minutes, note, server } => {
+        Cmd::Hold {
+            machine,
+            job,
+            minutes,
+            note,
+            server,
+        } => {
             let url = format!("{}/holds", server.trim_end_matches('/'));
             let body = json!({"machine": machine, "job": job, "minutes": minutes, "note": note});
             let v: serde_json::Value = tokio::task::spawn_blocking(move || match ureq::post(&url).send_json(body) {
@@ -385,7 +440,8 @@ async fn main() -> anyhow::Result<()> {
                     Err(anyhow::anyhow!("{}", v["error"].as_str().unwrap_or("refused")))
                 }
                 Err(e) => Err(e.into()),
-            }).await??;
+            })
+            .await??;
             println!("{}", v["id"].as_str().unwrap_or(""));
             return Ok(());
         }
@@ -396,7 +452,9 @@ async fn main() -> anyhow::Result<()> {
         }
         Cmd::Holds { server } => {
             let url = format!("{}/holds", server.trim_end_matches('/'));
-            let v: serde_json::Value = tokio::task::spawn_blocking(move || ureq::get(&url).call()?.into_json().map_err(anyhow::Error::from)).await??;
+            let v: serde_json::Value =
+                tokio::task::spawn_blocking(move || ureq::get(&url).call()?.into_json().map_err(anyhow::Error::from))
+                    .await??;
             println!("{}", serde_json::to_string_pretty(&v)?);
             return Ok(());
         }
@@ -406,14 +464,21 @@ async fn main() -> anyhow::Result<()> {
     match cli.cmd {
         Cmd::Check => {
             for (name, m) in &cfg.machines {
-                println!("machine {name}: priority {}, {}, jobs {:?}", m.priority, m.accel, m.jobs);
+                println!(
+                    "machine {name}: priority {}, {}, jobs {:?}",
+                    m.priority, m.accel, m.jobs
+                );
             }
             for (name, j) in &cfg.jobs {
                 println!("job {name}: {:?}", j.mode);
             }
         }
         Cmd::Assess { job } => {
-            let c = tokio::task::spawn_blocking({ let cfg = cfg.clone(); move || collect(&cfg, now()) }).await?;
+            let c = tokio::task::spawn_blocking({
+                let cfg = cfg.clone();
+                move || collect(&cfg, now())
+            })
+            .await?;
             for e in &c.errors {
                 eprintln!("signal: {e}");
             }
@@ -421,19 +486,32 @@ async fn main() -> anyhow::Result<()> {
             println!("{}", serde_json::to_string_pretty(&a)?);
         }
         Cmd::Signals => {
-            let c = tokio::task::spawn_blocking({ let cfg = cfg.clone(); move || collect(&cfg, now()) }).await?;
+            let c = tokio::task::spawn_blocking({
+                let cfg = cfg.clone();
+                move || collect(&cfg, now())
+            })
+            .await?;
             println!("{}", serde_json::to_string_pretty(&c)?);
         }
         Cmd::Serve { listen } => {
-            let listener = tokio::net::TcpListener::bind(&listen).await.with_context(|| format!("listening on {listen}"))?;
+            let listener = tokio::net::TcpListener::bind(&listen)
+                .await
+                .with_context(|| format!("listening on {listen}"))?;
             eprintln!("tasukeai listening on {listen}");
             let app = App::new(cfg)?;
             if let Some(p) = &app.state {
                 eprintln!("tasukeai keeps leases and holds in {}", p.display());
             }
-            axum::serve(listener, router(app)).with_graceful_shutdown(shutdown()).await?;
+            axum::serve(listener, router(app))
+                .with_graceful_shutdown(shutdown())
+                .await?;
         }
-        Cmd::Health { .. } | Cmd::Pick { .. } | Cmd::Release { .. } | Cmd::Hold { .. } | Cmd::Unhold { .. } | Cmd::Holds { .. } => unreachable!(),
+        Cmd::Health { .. }
+        | Cmd::Pick { .. }
+        | Cmd::Release { .. }
+        | Cmd::Hold { .. }
+        | Cmd::Unhold { .. }
+        | Cmd::Holds { .. } => unreachable!(),
     }
     Ok(())
 }
@@ -442,7 +520,8 @@ async fn main() -> anyhow::Result<()> {
 async fn shutdown() {
     #[cfg(unix)]
     {
-        let mut term = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()).expect("SIGTERM handler");
+        let mut term =
+            tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()).expect("SIGTERM handler");
         tokio::select! { _ = tokio::signal::ctrl_c() => {}, _ = term.recv() => {} }
     }
     #[cfg(not(unix))]
@@ -479,7 +558,11 @@ endpoint = "llm"
     async fn server() -> String {
         let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = l.local_addr().unwrap();
-        tokio::spawn(async move { axum::serve(l, router(App::new(Config::from_toml(CFG).unwrap()).unwrap())).await.unwrap() });
+        tokio::spawn(async move {
+            axum::serve(l, router(App::new(Config::from_toml(CFG).unwrap()).unwrap()))
+                .await
+                .unwrap()
+        });
         format!("http://{addr}")
     }
 
@@ -513,8 +596,14 @@ endpoint = "llm"
             assert_eq!(call("DELETE", &format!("{base}/leases/{id}")).0, 204);
             assert_eq!(call("DELETE", &format!("{base}/leases/{id}")).0, 404);
             assert_eq!(call("POST", &format!("{base}/pick?job=big")).1["machine"], "a");
-            assert_eq!(call("POST", &format!("{base}/pick?job=chat")).0, 400, "chat is a rank job");
-        }).await.unwrap();
+            assert_eq!(
+                call("POST", &format!("{base}/pick?job=chat")).0,
+                400,
+                "chat is a rank job"
+            );
+        })
+        .await
+        .unwrap();
     }
 
     fn send(method: &str, url: &str, body: serde_json::Value) -> (u16, serde_json::Value) {
@@ -539,17 +628,33 @@ endpoint = "llm"
         let (base, first) = start(cfg.clone()).await;
         let b = base.clone();
         tokio::task::spawn_blocking(move || {
-            assert_eq!(send("POST", &format!("{b}/holds"), json!({"machine": "a", "job": "many", "note": "fan"})).0, 201);
+            assert_eq!(
+                send(
+                    "POST",
+                    &format!("{b}/holds"),
+                    json!({"machine": "a", "job": "many", "note": "fan"})
+                )
+                .0,
+                201
+            );
             assert_eq!(call("POST", &format!("{b}/pick?job=big")).0, 200);
-        }).await.unwrap();
+        })
+        .await
+        .unwrap();
         first.abort();
-        let (base, _second) = start(cfg).await;  // as after a restart: everything comes from the file
+        let (base, _second) = start(cfg).await; // as after a restart: everything comes from the file
         tokio::task::spawn_blocking(move || {
             let holds = call("GET", &format!("{base}/holds")).1;
             assert_eq!(holds[0]["note"], "fan");
             assert_eq!(call("GET", &format!("{base}/leases")).1.as_array().unwrap().len(), 1);
-            assert_eq!(call("POST", &format!("{base}/pick?job=big")).0, 409, "a is still leased");
-        }).await.unwrap();
+            assert_eq!(
+                call("POST", &format!("{base}/pick?job=big")).0,
+                409,
+                "a is still leased"
+            );
+        })
+        .await
+        .unwrap();
         std::fs::remove_file(&path).ok();
     }
 
@@ -560,11 +665,28 @@ endpoint = "llm"
             // no machine reports vram_free_gb here: a rule of the caller on it fails closed, with the reason
             let (s, v) = call("GET", &format!("{base}/rank?job=chat&min.vram_free_gb=10"));
             assert_eq!((s, v["machines"].clone()), (200, json!([])));
-            assert!(v["assessment"]["rejected"].to_string().contains("vram_free_gb unknown (asked by the caller)"), "{v}");
-            assert_eq!(call("GET", &format!("{base}/assess?job=chat&max.gpu_temp_celsius=80")).1["usable"], json!([]));
-            assert_eq!(call("GET", &format!("{base}/rank?job=chat&min.vram_free_gb=lots")).0, 400);
-            assert_eq!(call("GET", &format!("{base}/rank?job=chat")).1["machines"], json!(["a", "b"]), "without them as before");
-        }).await.unwrap();
+            assert!(
+                v["assessment"]["rejected"]
+                    .to_string()
+                    .contains("vram_free_gb unknown (asked by the caller)"),
+                "{v}"
+            );
+            assert_eq!(
+                call("GET", &format!("{base}/assess?job=chat&max.gpu_temp_celsius=80")).1["usable"],
+                json!([])
+            );
+            assert_eq!(
+                call("GET", &format!("{base}/rank?job=chat&min.vram_free_gb=lots")).0,
+                400
+            );
+            assert_eq!(
+                call("GET", &format!("{base}/rank?job=chat")).1["machines"],
+                json!(["a", "b"]),
+                "without them as before"
+            );
+        })
+        .await
+        .unwrap();
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -574,23 +696,43 @@ endpoint = "llm"
             // leases and rank carry the job's endpoint
             let (_, v) = call("POST", &format!("{base}/spread?job=many&count=1"));
             assert_eq!(v["leases"][0]["endpoint"], "http://a/v1");
-            assert!(call("POST", &format!("{base}/pick?job=big")).1["lease"].get("endpoint").is_none(), "big names no endpoint");
+            assert!(
+                call("POST", &format!("{base}/pick?job=big")).1["lease"]
+                    .get("endpoint")
+                    .is_none(),
+                "big names no endpoint"
+            );
             let (_, v) = call("GET", &format!("{base}/rank?job=chat"));
             assert_eq!(v["endpoints"], json!(["http://a/v1", "http://b/v1"]));
             // a hold on a keeps it out of rank, with the note in the reason
-            let (s, h) = send("POST", &format!("{base}/holds"), json!({"machine": "a", "minutes": 60, "note": "game"}));
+            let (s, h) = send(
+                "POST",
+                &format!("{base}/holds"),
+                json!({"machine": "a", "minutes": 60, "note": "game"}),
+            );
             assert_eq!(s, 201);
             let (_, v) = call("GET", &format!("{base}/rank?job=chat"));
             assert_eq!(v["machines"], json!(["b"]));
             assert!(v["assessment"]["rejected"].to_string().contains("held by hand"), "{v}");
-            assert_eq!(v["assessment"]["rejected"][0]["endpoint"], "http://a/v1", "left-out machines show their endpoint too");
+            assert_eq!(
+                v["assessment"]["rejected"][0]["endpoint"], "http://a/v1",
+                "left-out machines show their endpoint too"
+            );
             assert!(v["assessment"]["rejected"].to_string().contains("game"));
             assert_eq!(call("GET", &format!("{base}/holds")).1.as_array().unwrap().len(), 1);
-            assert_eq!(send("POST", &format!("{base}/holds"), json!({"machine": "nope"})).0, 400);
+            assert_eq!(
+                send("POST", &format!("{base}/holds"), json!({"machine": "nope"})).0,
+                400
+            );
             let id = h["id"].as_str().unwrap();
             assert_eq!(call("DELETE", &format!("{base}/holds/{id}")).0, 204);
             assert_eq!(call("DELETE", &format!("{base}/holds/{id}")).0, 404);
-            assert_eq!(call("GET", &format!("{base}/rank?job=chat")).1["machines"], json!(["a", "b"]));
-        }).await.unwrap();
+            assert_eq!(
+                call("GET", &format!("{base}/rank?job=chat")).1["machines"],
+                json!(["a", "b"])
+            );
+        })
+        .await
+        .unwrap();
     }
 }

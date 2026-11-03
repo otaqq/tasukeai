@@ -23,7 +23,9 @@ impl Leases {
     /// The book saved by `save`, without what ran out meanwhile; a new one when the file does not exist.
     pub fn load(path: &Path, now: u64) -> std::io::Result<Self> {
         let mut book: Leases = match std::fs::read(path) {
-            Ok(bytes) => serde_json::from_slice(&bytes).map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?,
+            Ok(bytes) => {
+                serde_json::from_slice(&bytes).map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?
+            }
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Leases::new(),
             Err(e) => return Err(e),
         };
@@ -58,8 +60,15 @@ impl Leases {
 
     /// Keep a machine out by hand: for every job, or one job; until a time (None: until unhold). Leases already given
     /// stay until they run out or are released.
-    pub fn hold(&mut self, cfg: &Config, machine: &str, job: Option<&str>, until: Option<u64>, note: &str, now: u64)
-        -> Result<Hold, String> {
+    pub fn hold(
+        &mut self,
+        cfg: &Config,
+        machine: &str,
+        job: Option<&str>,
+        until: Option<u64>,
+        note: &str,
+        now: u64,
+    ) -> Result<Hold, String> {
         if !cfg.machines.contains_key(machine) {
             return Err(format!("unknown machine {machine}"));
         }
@@ -72,7 +81,13 @@ impl Leases {
             return Err("the hold would end before it starts".into());
         }
         self.counter += 1;
-        let hold = Hold { id: format!("h{now:x}-{:x}", self.counter), machine: machine.into(), job: job.map(String::from), until, note: note.into() };
+        let hold = Hold {
+            id: format!("h{now:x}-{:x}", self.counter),
+            machine: machine.into(),
+            job: job.map(String::from),
+            until,
+            note: note.into(),
+        };
         self.holds.push(hold.clone());
         Ok(hold)
     }
@@ -87,23 +102,46 @@ impl Leases {
     fn take(&mut self, cfg: &Config, job: &str, machine: &str, now: u64) -> Lease {
         self.counter += 1;
         let seconds = cfg.jobs.get(job).map(|j| j.lease_seconds).unwrap_or(600);
-        let endpoint = cfg.jobs.get(job).and_then(|j| j.endpoint.as_ref())
-            .and_then(|e| cfg.machines.get(machine).and_then(|m| m.endpoints.get(e))).cloned();
-        let lease = Lease { id: format!("{now:x}-{:x}", self.counter), machine: machine.into(), job: job.into(), until: now + seconds, endpoint };
+        let endpoint = cfg
+            .jobs
+            .get(job)
+            .and_then(|j| j.endpoint.as_ref())
+            .and_then(|e| cfg.machines.get(machine).and_then(|m| m.endpoints.get(e)))
+            .cloned();
+        let lease = Lease {
+            id: format!("{now:x}-{:x}", self.counter),
+            machine: machine.into(),
+            job: job.into(),
+            until: now + seconds,
+            endpoint,
+        };
         self.list.push(lease.clone());
         lease
     }
 
     /// `exclusive`: decide and lease in one step (the caller holds the book while doing it, so two callers cannot
     /// get the same machine).
-    pub fn pick(&mut self, cfg: &Config, job: &str, snap: &Snapshot, now: u64) -> Result<(Option<Lease>, Assessment), DecideError> {
+    pub fn pick(
+        &mut self,
+        cfg: &Config,
+        job: &str,
+        snap: &Snapshot,
+        now: u64,
+    ) -> Result<(Option<Lease>, Assessment), DecideError> {
         self.prune(now);
         let (m, a) = pick(cfg, job, snap, &self.list, &self.holds, now)?;
         Ok((m.map(|m| self.take(cfg, job, &m, now)), a))
     }
 
     /// `spread`: up to `count` leases, one per slot given.
-    pub fn spread(&mut self, cfg: &Config, job: &str, count: u32, snap: &Snapshot, now: u64) -> Result<(Vec<Lease>, Assessment), DecideError> {
+    pub fn spread(
+        &mut self,
+        cfg: &Config,
+        job: &str,
+        count: u32,
+        snap: &Snapshot,
+        now: u64,
+    ) -> Result<(Vec<Lease>, Assessment), DecideError> {
         self.prune(now);
         let (ms, a) = spread(cfg, job, count, snap, &self.list, &self.holds, now)?;
         Ok((ms.iter().map(|m| self.take(cfg, job, m, now)).collect(), a))
@@ -171,8 +209,14 @@ lease_seconds = 50
         let mut book = Leases::new();
         let snap = Snapshot::new();
         let (ls, _) = book.spread(&cfg, "many", 5, &snap, 0).unwrap();
-        assert_eq!(ls.iter().map(|l| l.machine.as_str()).collect::<Vec<_>>(), vec!["a", "a", "b"]);
-        assert!(book.spread(&cfg, "many", 1, &snap, 10).unwrap().0.is_empty(), "all slots leased");
+        assert_eq!(
+            ls.iter().map(|l| l.machine.as_str()).collect::<Vec<_>>(),
+            vec!["a", "a", "b"]
+        );
+        assert!(
+            book.spread(&cfg, "many", 1, &snap, 10).unwrap().0.is_empty(),
+            "all slots leased"
+        );
         let renewed = book.renew(&cfg, &ls[0].id, 40).unwrap();
         assert_eq!(renewed.until, 90);
         assert_eq!(book.active(60).len(), 1, "the renewed one is still there");
@@ -190,19 +234,29 @@ lease_seconds = 50
         let h = book.hold(&cfg, "a", None, Some(100), "playing", 0).unwrap();
         let (l, a) = book.pick(&cfg, "big", &snap, 10).unwrap();
         assert_eq!(l.unwrap().machine, "b");
-        assert!(a.rejected.iter().any(|r| r.machine == "a" && r.reasons == vec!["held by hand until 100: playing".to_string()]));
+        assert!(a
+            .rejected
+            .iter()
+            .any(|r| r.machine == "a" && r.reasons == vec!["held by hand until 100: playing".to_string()]));
         assert!(book.unhold(&h.id));
         // a hold for one job leaves the others (a new book: the exclusive lease above holds b for every job)
         let mut book = Leases::new();
         book.hold(&cfg, "a", Some("many"), None, "", 10).unwrap();
-        assert_eq!(book.pick(&cfg, "big", &snap, 20).unwrap().0.unwrap().machine, "a", "big is not held");
+        assert_eq!(
+            book.pick(&cfg, "big", &snap, 20).unwrap().0.unwrap().machine,
+            "a",
+            "big is not held"
+        );
         let mut book = Leases::new();
         book.hold(&cfg, "a", Some("many"), None, "", 10).unwrap();
         let (ls, _) = book.spread(&cfg, "many", 5, &snap, 20).unwrap();
         assert_eq!(ls.iter().map(|l| l.machine.as_str()).collect::<Vec<_>>(), vec!["b"]);
         assert!(book.hold(&cfg, "nope", None, None, "", 0).is_err());
         assert!(book.hold(&cfg, "a", Some("nope"), None, "", 0).is_err());
-        assert!(book.hold(&cfg, "a", None, Some(5), "", 10).is_err(), "ends before it starts");
+        assert!(
+            book.hold(&cfg, "a", None, Some(5), "", 10).is_err(),
+            "ends before it starts"
+        );
         // a timed hold runs out by itself
         let mut book = Leases::new();
         book.hold(&cfg, "a", None, Some(100), "", 0).unwrap();
@@ -222,17 +276,26 @@ lease_seconds = 50
         book.save(&path).unwrap();
         let mut again = Leases::load(&path, 1060).unwrap();
         assert_eq!(again.active(1060).to_vec(), vec![l.unwrap()]);
-        assert_eq!(again.holds(1060).iter().map(|h| h.note.as_str()).collect::<Vec<_>>(), vec!["kept"], "the short one ran out");
+        assert_eq!(
+            again.holds(1060).iter().map(|h| h.note.as_str()).collect::<Vec<_>>(),
+            vec!["kept"],
+            "the short one ran out"
+        );
         // ids go on from where they were, so a new hold does not reuse one
         let h = again.hold(&cfg, "a", None, None, "", 1060).unwrap();
         assert!(!book.holds(1000).iter().any(|o| o.id == h.id));
         std::fs::remove_file(&path).unwrap();
-        assert_eq!(Leases::load(&path, 0).unwrap().active(0).len(), 0, "no file: a new book");
+        assert_eq!(
+            Leases::load(&path, 0).unwrap().active(0).len(),
+            0,
+            "no file: a new book"
+        );
     }
 
     #[test]
     fn leases_carry_the_job_endpoint() {
-        let cfg = Config::from_toml(r#"
+        let cfg = Config::from_toml(
+            r#"
 [machines.a]
 priority = 1
 accel = "cuda"
@@ -241,12 +304,15 @@ endpoints = { llm = "http://a:11434/v1", other = "http://a:1" }
 [jobs.many]
 mode = "spread"
 endpoint = "llm"
-"#).unwrap();
+"#,
+        )
+        .unwrap();
         let (ls, a) = Leases::new().spread(&cfg, "many", 1, &Snapshot::new(), 0).unwrap();
         assert_eq!(ls[0].endpoint.as_deref(), Some("http://a:11434/v1"));
         assert_eq!(a.usable[0].endpoint.as_deref(), Some("http://a:11434/v1"));
         // a job naming an endpoint a machine with a slot lacks is a configuration error
-        let bad = Config::from_toml(r#"
+        let bad = Config::from_toml(
+            r#"
 [machines.a]
 priority = 1
 accel = "cuda"
@@ -254,7 +320,8 @@ jobs = { many = 1 }
 [jobs.many]
 mode = "spread"
 endpoint = "llm"
-"#);
+"#,
+        );
         assert!(bad.unwrap_err().to_string().contains("does not have"));
     }
 }

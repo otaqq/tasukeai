@@ -20,7 +20,10 @@ pub struct Collected {
 /// The value of an instant query: the first sample of a vector, or a scalar. None when there is no result.
 pub fn parse_query_response(body: &serde_json::Value) -> Result<Option<f64>, String> {
     if body.get("status").and_then(|s| s.as_str()) != Some("success") {
-        return Err(format!("query failed: {}", body.get("error").and_then(|e| e.as_str()).unwrap_or("no status")));
+        return Err(format!(
+            "query failed: {}",
+            body.get("error").and_then(|e| e.as_str()).unwrap_or("no status")
+        ));
     }
     let data = body.get("data").ok_or("no data")?;
     let value = match data.get("resultType").and_then(|t| t.as_str()) {
@@ -36,7 +39,9 @@ pub fn parse_query_response(body: &serde_json::Value) -> Result<Option<f64>, Str
 }
 
 fn agent(timeout_ms: u64) -> ureq::Agent {
-    ureq::AgentBuilder::new().timeout(Duration::from_millis(timeout_ms)).build()
+    ureq::AgentBuilder::new()
+        .timeout(Duration::from_millis(timeout_ms))
+        .build()
 }
 
 fn query(agent: &ureq::Agent, base: &str, expr: &str) -> Result<Option<f64>, String> {
@@ -97,7 +102,11 @@ fn collect_machine(cfg: &Config, name: &str, now: u64) -> (Signals, Vec<String>)
 pub fn collect(cfg: &Config, now: u64) -> Collected {
     let mut out = Collected::default();
     std::thread::scope(|s| {
-        let handles: Vec<_> = cfg.machines.keys().map(|n| (n.clone(), s.spawn(move || collect_machine(cfg, n, now)))).collect();
+        let handles: Vec<_> = cfg
+            .machines
+            .keys()
+            .map(|n| (n.clone(), s.spawn(move || collect_machine(cfg, n, now))))
+            .collect();
         for (name, h) in handles {
             match h.join() {
                 Ok((signals, errors)) => {
@@ -165,7 +174,9 @@ mod tests {
         } else {
             return None;
         };
-        Some(format!(r#"{{"status":"success","data":{{"resultType":"vector","result":[{{"metric":{{}},"value":[1,"{v}"]}}]}}}}"#))
+        Some(format!(
+            r#"{{"status":"success","data":{{"resultType":"vector","result":[{{"metric":{{}},"value":[1,"{v}"]}}]}}}}"#
+        ))
     }
 
     fn status(path: &str) -> Option<String> {
@@ -179,7 +190,8 @@ mod tests {
     fn collects_queries_and_checks() {
         let p = serve(prom);
         let h = serve(status);
-        let cfg = Config::from_toml(&format!(r#"
+        let cfg = Config::from_toml(&format!(
+            r#"
 [metrics]
 url = "{p}"
 [machines.desk]
@@ -192,7 +204,9 @@ checks = [{{ signal = "status_up", url = "{h}/ok" }},
           {{ signal = "hot", url = "{h}/ok", json = "/hot" }},
           {{ signal = "down", url = "{h}/missing" }},
           {{ signal = "nowhere", url = "http://127.0.0.1:9/" }}]
-"#)).unwrap();
+"#
+        ))
+        .unwrap();
         let got = collect(&cfg, 100);
         let s = &got.snapshot["desk"];
         assert_eq!(s["up"], (1.0, 100));
@@ -209,7 +223,8 @@ checks = [{{ signal = "status_up", url = "{h}/ok" }},
 
     #[test]
     fn presets_and_instance_labels() {
-        let cfg = Config::from_toml(r#"
+        let cfg = Config::from_toml(
+            r#"
 [presets.gpu]
 vram_free_bytes = 'my_gpu_free{instance="{instance}"}'
 [machines.a]
@@ -218,10 +233,15 @@ accel = "cpu"
 instance = "a.example:9100"
 presets = ["node", "gpu"]
 queries = { load15 = 'custom_load{instance="{instance}"}' }
-"#).unwrap();
+"#,
+        )
+        .unwrap();
         let q = cfg.queries_of("a");
         assert_eq!(q["vram_free_bytes"], r#"my_gpu_free{instance="a.example:9100"}"#);
-        assert_eq!(q["load15"], r#"custom_load{instance="a.example:9100"}"#, "machine queries win over presets");
+        assert_eq!(
+            q["load15"], r#"custom_load{instance="a.example:9100"}"#,
+            "machine queries win over presets"
+        );
         assert!(q["ram_usable_bytes"].contains("MemAvailable"));
         let bad = Config::from_toml("[machines.a]\npriority = 1\naccel = \"cpu\"\npresets = [\"nope\"]\n");
         assert!(bad.unwrap_err().to_string().contains("unknown preset nope"));

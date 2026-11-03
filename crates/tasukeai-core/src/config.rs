@@ -78,7 +78,11 @@ pub struct Metrics {
 
 impl Default for Metrics {
     fn default() -> Self {
-        Metrics { url: None, timeout_ms: default_timeout(), cache_seconds: default_cache() }
+        Metrics {
+            url: None,
+            timeout_ms: default_timeout(),
+            cache_seconds: default_cache(),
+        }
     }
 }
 
@@ -198,14 +202,24 @@ impl Config {
     /// The PromQL expression of every signal of a machine, {instance} replaced.
     pub fn queries_of(&self, machine: &str) -> BTreeMap<String, String> {
         let mut out = BTreeMap::new();
-        let Some(m) = self.machines.get(machine) else { return out };
+        let Some(m) = self.machines.get(machine) else {
+            return out;
+        };
         let instance = m.instance.clone().unwrap_or_else(|| machine.to_string());
         for p in &m.presets {
             if let Some(signals) = self.presets.get(p) {
-                out.extend(signals.iter().map(|(k, v)| (k.clone(), v.replace("{instance}", &instance))));
+                out.extend(
+                    signals
+                        .iter()
+                        .map(|(k, v)| (k.clone(), v.replace("{instance}", &instance))),
+                );
             }
         }
-        out.extend(m.queries.iter().map(|(k, v)| (k.clone(), v.replace("{instance}", &instance))));
+        out.extend(
+            m.queries
+                .iter()
+                .map(|(k, v)| (k.clone(), v.replace("{instance}", &instance))),
+        );
         out
     }
 
@@ -222,7 +236,9 @@ impl Config {
                 };
                 if let Some(e) = &j.endpoint {
                     if *slots > 0 && !m.endpoints.contains_key(e) {
-                        return Err(ConfigError::Invalid(format!("job {job} uses endpoint {e}, which machine {name} does not have")));
+                        return Err(ConfigError::Invalid(format!(
+                            "job {job} uses endpoint {e}, which machine {name} does not have"
+                        )));
                     }
                 }
             }
@@ -246,11 +262,17 @@ impl Config {
 
 fn check_rule(r: &Rule, at: &str, jobs: &BTreeMap<String, Job>) -> Result<(), ConfigError> {
     if r.min.is_none() && r.max.is_none() {
-        return Err(ConfigError::Invalid(format!("{at}: rule on {} has neither min nor max", r.signal)));
+        return Err(ConfigError::Invalid(format!(
+            "{at}: rule on {} has neither min nor max",
+            r.signal
+        )));
     }
     for j in r.jobs.iter().flatten() {
         if !jobs.contains_key(j) {
-            return Err(ConfigError::Invalid(format!("{at}: rule on {} names unknown job {j}", r.signal)));
+            return Err(ConfigError::Invalid(format!(
+                "{at}: rule on {} names unknown job {j}",
+                r.signal
+            )));
         }
     }
     Ok(())
