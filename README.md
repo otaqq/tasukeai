@@ -106,6 +106,21 @@ curl -fsSL https://github.com/otaqq/tasukeai/releases/download/$v/SHA256SUMS | s
 tar -xzf tasukeai-$v-$t.tar.gz && ./tasukeai-$v-$t/tasukeai --version
 ```
 
+## Footprint
+
+tasukeai is small enough for edge devices. Measured on one instance in Kubernetes under light load, over 7 days
+(cAdvisor metrics, x86_64):
+
+| | now | peak (7 days) |
+|---|---|---|
+| RSS | 0.45 MiB | 0.52 MiB |
+| Working set | 0.75 MiB | 1.24 MiB |
+| CPU | about 0.012 cores | |
+
+The binary is static (musl), so it needs no libc or other files on the host. Memory grows with the number of
+machines, jobs, leases and holds; the numbers above are for a small setup, not a limit. Requests of `32Mi` memory and
+`10m` CPU, with a `128Mi` memory limit, leave plenty of headroom.
+
 ## Development
 
 ```sh
