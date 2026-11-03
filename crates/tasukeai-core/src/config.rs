@@ -118,7 +118,7 @@ pub struct Machine {
     pub queries: BTreeMap<String, String>,
     #[serde(default)]
     pub checks: Vec<Check>,
-    /// Named addresses of services on this machine, e.g. llm = "http://10.0.0.5:11434/v1". A job that names one gets
+    /// Named addresses of services on this machine, e.g. llm = "http://desk:11434/v1". A job that names one gets
     /// its URL with each lease (and in rank answers), so callers keep no address table of their own.
     #[serde(default)]
     pub endpoints: BTreeMap<String, String>,

@@ -92,6 +92,13 @@ curl -s localhost:9660/health
 stopped and checks health with `tasukeai health`. Without Compose:
 `docker build -f docker/Dockerfile -t tasukeai . && docker run -v $PWD/tasukeai.toml:/tasukeai.toml:ro -p 9660:9660 tasukeai`.
 
+## The name
+
+*tasukeai* (助け合い) means "helping each other". *Tasuke* (助け) is "help"; *ai* (合い, from *au*, "to come
+together") makes it mutual, something done together. The pun is intended: the work it was made for is AI work
+(LLM chat, extraction, training) on whatever machines can lend a hand right now, and read as English the name
+ends in "AI".
+
 ## License
 
 MIT
