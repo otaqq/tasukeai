@@ -1,0 +1,54 @@
+# tasukeai as a systemd service (see docs/deployment.md, "systemd").
+#   binary:        /usr/local/bin/tasukeai
+#   configuration: /etc/tasukeai/tasukeai.toml
+#   state:         /var/lib/tasukeai/state.json, with [state] path = "/var/lib/tasukeai/state.json"
+# Change settings with `systemctl edit tasukeai` (a drop-in) rather than editing this file.
+
+[Unit]
+Description=tasukeai: which machine should take a piece of work now
+Documentation=https://github.com/otaqq/tasukeai
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=exec
+ExecStart=/usr/local/bin/tasukeai --config /etc/tasukeai/tasukeai.toml serve --listen 0.0.0.0:9660
+Restart=on-failure
+RestartSec=5s
+
+# A user made for this service only; /var/lib/tasukeai is its own, /etc/tasukeai is read-only to it
+DynamicUser=yes
+StateDirectory=tasukeai
+ConfigurationDirectory=tasukeai
+
+# Measured use is under 2 MiB (docs/deployment.md)
+MemoryMax=128M
+
+# It only reads its configuration, writes its state and talks HTTP
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+ProtectProc=invisible
+ProcSubset=pid
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged @resources
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

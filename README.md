@@ -32,7 +32,8 @@ flowchart LR
   `rank` (usable machines in order, for short requests such as LLM chat).
 - **Reasons, not just answers.** Every machine left out says why: `idle_seconds = 120 < 600 (someone is using it)`.
 - **Fail closed.** A machine that stops reporting (off, asleep, away) has unknown signals, and unknown fails its rules.
-- **Small.** A static binary of about 7 MiB, under 2 MiB of memory in use; runs on edge devices (x86_64, aarch64).
+- **Small.** A static binary of about 7 MiB using a few MiB of memory; runs on edge devices (x86_64, aarch64) with
+  systemd, Docker or Kubernetes.
 
 Status: early. The decision core, signal collection, leases, holds and state are built and tested; v0.x may still
 change the configuration.
@@ -52,7 +53,7 @@ curl -s -X POST 'localhost:9660/pick?job=train'
 |---|---|
 | [Configuration](docs/configuration.md) | signals, machines, jobs, rules, how a decision is made |
 | [HTTP API and CLI](docs/api.md) | calls, leases, endpoints, holds, scripts |
-| [Deployment](docs/deployment.md) | binary, Docker, Kubernetes (Helm), footprint |
+| [Deployment](docs/deployment.md) | binary, systemd, Docker, Kubernetes (Helm), footprint |
 | [Development](docs/development.md) | building, CI, releases |
 | [Design notes](docs/design.md) | why, concepts, open questions |
 
