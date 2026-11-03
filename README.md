@@ -92,6 +92,21 @@ curl -s localhost:9660/health
 stopped and checks health with `tasukeai health`. Without Compose:
 `docker build -f docker/Dockerfile -t tasukeai . && docker run -v $PWD/tasukeai.toml:/tasukeai.toml:ro -p 9660:9660 tasukeai`.
 
+## Development
+
+```sh
+cargo fmt --all            # rustfmt.toml: max_width 120
+cargo clippy --workspace --all-targets --locked -- -D warnings
+cargo test --workspace --locked
+```
+
+CI runs the same three checks on every push to `main` and every pull request (`.github/workflows/ci.yml`), builds
+the image and runs it once, and on GitHub repeats the tests and the image on native arm64.
+`.github/workflows/security.yml` scans on pushes, pull requests and weekly: Trivy on the image and the repository
+(vulnerabilities, misconfigurations, secrets; HIGH and CRITICAL with a fix) and `cargo audit` on `Cargo.lock`. On
+GitHub the Trivy results go to code scanning; on other CI services one issue titled "Security scan: vulnerabilities
+found" holds the report and is closed when a scan comes back clean.
+
 ## The name
 
 *tasukeai* (助け合い) means "helping each other". *Tasuke* (助け) is "help"; *ai* (合い, from *au*, "to come
