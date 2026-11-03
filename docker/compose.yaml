@@ -1,15 +1,17 @@
 # tasukeai with Docker Compose. From the repository root:
 #   cp examples/tasukeai.toml tasukeai.toml    # describe your machines and jobs
 #   docker compose -f docker/compose.yaml up -d
+# This runs the published image (TASUKEAI_VERSION, default latest; `docker compose pull` to update).
+# To build from source instead: docker compose -f docker/compose.yaml up -d --build
 name: tasukeai
 
 services:
   tasukeai:
+    image: ghcr.io/otaqq/tasukeai:${TASUKEAI_VERSION:-latest}
     build:
       context: ..
       dockerfile: docker/Dockerfile
       target: production
-    image: tasukeai:local
     ports:
       - "${TASUKEAI_PORT:-9660}:9660"
     volumes:

@@ -87,10 +87,24 @@ docker compose -f docker/compose.yaml up -d
 curl -s localhost:9660/health
 ```
 
-`docker/compose.yaml` builds the image from `docker/Dockerfile` (a static binary on distroless), mounts
+`docker/compose.yaml` runs the published image `ghcr.io/otaqq/tasukeai` (linux/amd64 and linux/arm64; a static
+binary on distroless, as user 65532) at `TASUKEAI_VERSION` (default `latest`; `docker compose pull` updates it), mounts
 `tasukeai.toml` read-only (`TASUKEAI_CONFIG` points elsewhere), publishes `TASUKEAI_PORT` (9660), restarts unless
-stopped and checks health with `tasukeai health`. Without Compose:
-`docker build -f docker/Dockerfile -t tasukeai . && docker run -v $PWD/tasukeai.toml:/tasukeai.toml:ro -p 9660:9660 tasukeai`.
+stopped and checks health with `tasukeai health`. `up -d --build` builds the image from source (`docker/Dockerfile`)
+instead. Without Compose:
+`docker run -d -v $PWD/tasukeai.toml:/tasukeai.toml:ro -p 9660:9660 ghcr.io/otaqq/tasukeai`.
+
+## Run the binary
+
+Each [release](https://github.com/otaqq/tasukeai/releases) has static Linux binaries (musl, no dependencies) for
+x86_64 and aarch64, with `SHA256SUMS`:
+
+```sh
+v=v0.4.1; t=x86_64-unknown-linux-musl          # or aarch64-unknown-linux-musl
+curl -fsSLO https://github.com/otaqq/tasukeai/releases/download/$v/tasukeai-$v-$t.tar.gz
+curl -fsSL https://github.com/otaqq/tasukeai/releases/download/$v/SHA256SUMS | sha256sum -c --ignore-missing
+tar -xzf tasukeai-$v-$t.tar.gz && ./tasukeai-$v-$t/tasukeai --version
+```
 
 ## Development
 
@@ -106,6 +120,12 @@ the image and runs it once, and on GitHub repeats the tests and the image on nat
 (vulnerabilities, misconfigurations, secrets; HIGH and CRITICAL with a fix) and `cargo audit` on `Cargo.lock`. On
 GitHub the Trivy results go to code scanning; on other CI services one issue titled "Security scan: vulnerabilities
 found" holds the report and is closed when a scan comes back clean.
+
+A version tag (`v1.2.3`, or `v1.2.3-rc.1` for a pre-release) runs `.github/workflows/release.yml` on GitHub: the tag
+must match the version in `Cargo.toml`; on native x86_64 and aarch64 runners it tests and builds the static binary
+in the `builder` stage of `docker/Dockerfile`, puts those binaries into the multi-arch image (`release` stage, no
+emulation) on ghcr.io with provenance and an SBOM (tags `1.2.3`, `1.2` and `latest`; a pre-release only its own
+version), and publishes a GitHub Release with the archives and `SHA256SUMS`.
 
 ## The name
 

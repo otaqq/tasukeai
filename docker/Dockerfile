@@ -14,8 +14,7 @@ FROM base AS builder
 COPY . .
 RUN cargo build --release --locked -p tasukeai && cp target/release/tasukeai /bin/tasukeai
 
-FROM gcr.io/distroless/static-debian13:nonroot AS production
-COPY --from=builder /bin/tasukeai /tasukeai
+FROM gcr.io/distroless/static-debian13:nonroot AS runtime
 # The nonroot user of the distroless image, stated so scanners see it
 USER 65532:65532
 EXPOSE 9660
@@ -23,3 +22,13 @@ EXPOSE 9660
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s CMD ["/tasukeai", "health"]
 ENTRYPOINT ["/tasukeai", "--config", "/tasukeai.toml"]
 CMD ["serve"]
+
+# Published images (.github/workflows/release.yml): the release binaries, built natively per architecture and put in
+# bin/<arch>/ beforehand, so the multi-arch image needs no emulation and holds the same files as the release.
+FROM runtime AS release
+ARG TARGETARCH
+COPY --chmod=755 bin/${TARGETARCH}/tasukeai /tasukeai
+
+# Default target (last stage): built from source
+FROM runtime AS production
+COPY --from=builder /bin/tasukeai /tasukeai
