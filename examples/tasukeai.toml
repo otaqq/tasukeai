@@ -2,6 +2,9 @@
 # (built-in: node, node_darwin, windows), their own PromQL queries and HTTP checks; rules compare signals.
 stale_after_seconds = 120
 
+[state]                          # keep leases and holds across restarts (omit for memory only)
+path = "/data/state.json"
+
 [metrics]
 url = "http://prometheus:9090"   # a Prometheus-compatible query API
 

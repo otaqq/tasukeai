@@ -1,11 +1,14 @@
 //! Leases: short reservations of machines handed out by `exclusive` and `spread`, so that the next decision (before
 //! the metrics show the new load) does not hand the same machine out again; and holds: machines a person keeps out
-//! by hand. In memory; the process keeps one book for all its callers, a library caller keeps its own.
+//! by hand. In memory; the process keeps one book for all its callers, a library caller keeps its own. The book can
+//! be saved to and loaded from a JSON file ([state] path), so a restart keeps both.
 
 use crate::config::Config;
 use crate::decide::{pick, spread, Assessment, DecideError, Hold, Lease, Snapshot};
+use serde::{Deserialize, Serialize};
+use std::path::Path;
 
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Serialize, Deserialize)]
 pub struct Leases {
     list: Vec<Lease>,
     holds: Vec<Hold>,
@@ -15,6 +18,24 @@ pub struct Leases {
 impl Leases {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// The book saved by `save`, without what ran out meanwhile; a new one when the file does not exist.
+    pub fn load(path: &Path, now: u64) -> std::io::Result<Self> {
+        let mut book: Leases = match std::fs::read(path) {
+            Ok(bytes) => serde_json::from_slice(&bytes).map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Leases::new(),
+            Err(e) => return Err(e),
+        };
+        book.prune(now);
+        Ok(book)
+    }
+
+    /// Write the whole book to `path` (a temporary file next to it, then renamed: a crash never leaves half a file).
+    pub fn save(&self, path: &Path) -> std::io::Result<()> {
+        let tmp = path.with_extension("tmp");
+        std::fs::write(&tmp, serde_json::to_vec_pretty(self).map_err(std::io::Error::other)?)?;
+        std::fs::rename(&tmp, path)
     }
 
     /// Forget leases and holds that have run out.
@@ -188,6 +209,25 @@ lease_seconds = 50
         assert_eq!(book.holds(99).len(), 1);
         assert_eq!(book.holds(100).len(), 0);
         assert!(!book.unhold("nope"));
+    }
+
+    #[test]
+    fn save_and_load_keep_leases_and_holds() {
+        let cfg = Config::from_toml(CFG).unwrap();
+        let path = std::env::temp_dir().join(format!("tasukeai-test-{}.json", std::process::id()));
+        let mut book = Leases::new();
+        let (l, _) = book.pick(&cfg, "big", &Snapshot::new(), 1000).unwrap();
+        book.hold(&cfg, "b", Some("many"), None, "kept", 1000).unwrap();
+        book.hold(&cfg, "b", None, Some(1050), "short", 1000).unwrap();
+        book.save(&path).unwrap();
+        let mut again = Leases::load(&path, 1060).unwrap();
+        assert_eq!(again.active(1060).to_vec(), vec![l.unwrap()]);
+        assert_eq!(again.holds(1060).iter().map(|h| h.note.as_str()).collect::<Vec<_>>(), vec!["kept"], "the short one ran out");
+        // ids go on from where they were, so a new hold does not reuse one
+        let h = again.hold(&cfg, "a", None, None, "", 1060).unwrap();
+        assert!(!book.holds(1000).iter().any(|o| o.id == h.id));
+        std::fs::remove_file(&path).unwrap();
+        assert_eq!(Leases::load(&path, 0).unwrap().active(0).len(), 0, "no file: a new book");
     }
 
     #[test]

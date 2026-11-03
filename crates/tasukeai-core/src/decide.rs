@@ -13,14 +13,14 @@ pub type Signals = BTreeMap<String, (f64, u64)>;
 pub type Snapshot = BTreeMap<String, Signals>;
 
 /// A reservation of one slot of a machine for a job until a time.
-#[derive(Debug, Clone, Serialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Lease {
     pub id: String,
     pub machine: String,
     pub job: String,
     pub until: u64,
     /// The URL of the job's endpoint on that machine, when the job names one.
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub endpoint: Option<String>,
 }
 

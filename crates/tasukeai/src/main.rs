@@ -120,11 +120,28 @@ struct App {
     cfg: Config,
     cache: Mutex<Option<(Instant, Collected)>>,
     leases: Mutex<Leases>,
+    /// [state] path: the leases and holds are saved there after every change and loaded on start.
+    state: Option<PathBuf>,
 }
 
 impl App {
-    fn new(cfg: Config) -> Arc<Self> {
-        Arc::new(App { cfg, cache: Mutex::new(None), leases: Mutex::new(Leases::new()) })
+    fn new(cfg: Config) -> anyhow::Result<Arc<Self>> {
+        let state = cfg.state.path.as_ref().map(PathBuf::from);
+        let book = match &state {
+            Some(p) => Leases::load(p, now()).with_context(|| format!("loading the state file {}", p.display()))?,
+            None => Leases::new(),
+        };
+        Ok(Arc::new(App { cfg, cache: Mutex::new(None), leases: Mutex::new(book), state }))
+    }
+
+    /// Save the book after a change (under its lock, so saves never interleave). A failed save is logged: the change
+    /// stands in memory, and the next change tries again.
+    fn save(&self, book: &Leases) {
+        if let Some(p) = &self.state {
+            if let Err(e) = book.save(p) {
+                eprintln!("tasukeai: cannot save the state to {}: {e}", p.display());
+            }
+        }
     }
 
     /// Signals, collected again when the cached ones are older than [metrics] cache_seconds.
@@ -179,7 +196,14 @@ async fn assess_job(State(app): State<Arc<App>>, Query(q): Query<JobQuery>) -> R
 /// POST /pick?job=: one machine and its lease; 409 with the reasons when none can take it.
 async fn pick_job(State(app): State<Arc<App>>, Query(q): Query<JobQuery>) -> Response {
     let c = app.signals().await;
-    let result = app.leases.lock().unwrap().pick(&app.cfg, &q.job, &c.snapshot, now());
+    let result = {
+        let mut book = app.leases.lock().unwrap();
+        let r = book.pick(&app.cfg, &q.job, &c.snapshot, now());
+        if matches!(r, Ok((Some(_), _))) {
+            app.save(&book);
+        }
+        r
+    };
     match result {
         Ok((Some(l), a)) => Json(json!({"machine": l.machine, "lease": l, "assessment": a})).into_response(),
         Ok((None, a)) => (StatusCode::CONFLICT, Json(json!({"machine": null, "assessment": a}))).into_response(),
@@ -190,7 +214,14 @@ async fn pick_job(State(app): State<Arc<App>>, Query(q): Query<JobQuery>) -> Res
 /// POST /spread?job=&count=: up to count leases (a machine once per slot); 409 when none.
 async fn spread_job(State(app): State<Arc<App>>, Query(q): Query<JobQuery>) -> Response {
     let c = app.signals().await;
-    let result = app.leases.lock().unwrap().spread(&app.cfg, &q.job, q.count, &c.snapshot, now());
+    let result = {
+        let mut book = app.leases.lock().unwrap();
+        let r = book.spread(&app.cfg, &q.job, q.count, &c.snapshot, now());
+        if matches!(&r, Ok((ls, _)) if !ls.is_empty()) {
+            app.save(&book);
+        }
+        r
+    };
     match result {
         Ok((ls, a)) => {
             let status = if ls.is_empty() { StatusCode::CONFLICT } else { StatusCode::OK };
@@ -218,14 +249,20 @@ async fn list_leases(State(app): State<Arc<App>>) -> Json<serde_json::Value> {
 }
 
 async fn renew_lease(State(app): State<Arc<App>>, Path(id): Path<String>) -> Response {
-    match app.leases.lock().unwrap().renew(&app.cfg, &id, now()) {
-        Some(l) => Json(l).into_response(),
+    let mut book = app.leases.lock().unwrap();
+    match book.renew(&app.cfg, &id, now()) {
+        Some(l) => {
+            app.save(&book);
+            Json(l).into_response()
+        }
         None => err(StatusCode::NOT_FOUND, format!("no lease {id}")),
     }
 }
 
 async fn release_lease(State(app): State<Arc<App>>, Path(id): Path<String>) -> Response {
-    if app.leases.lock().unwrap().release(&id) {
+    let mut book = app.leases.lock().unwrap();
+    if book.release(&id) {
+        app.save(&book);
         StatusCode::NO_CONTENT.into_response()
     } else {
         err(StatusCode::NOT_FOUND, format!("no lease {id}"))
@@ -235,8 +272,12 @@ async fn release_lease(State(app): State<Arc<App>>, Path(id): Path<String>) -> R
 /// POST /holds {machine, job?, minutes?, note?}: keep a machine out by hand; 201 with the hold.
 async fn add_hold(State(app): State<Arc<App>>, Json(r): Json<HoldRequest>) -> Response {
     let until = r.minutes.map(|m| now() + m * 60);
-    match app.leases.lock().unwrap().hold(&app.cfg, &r.machine, r.job.as_deref(), until, &r.note, now()) {
-        Ok(h) => (StatusCode::CREATED, Json(h)).into_response(),
+    let mut book = app.leases.lock().unwrap();
+    match book.hold(&app.cfg, &r.machine, r.job.as_deref(), until, &r.note, now()) {
+        Ok(h) => {
+            app.save(&book);
+            (StatusCode::CREATED, Json(h)).into_response()
+        }
         Err(e) => err(StatusCode::BAD_REQUEST, e),
     }
 }
@@ -246,7 +287,9 @@ async fn list_holds(State(app): State<Arc<App>>) -> Json<serde_json::Value> {
 }
 
 async fn end_hold(State(app): State<Arc<App>>, Path(id): Path<String>) -> Response {
-    if app.leases.lock().unwrap().unhold(&id) {
+    let mut book = app.leases.lock().unwrap();
+    if book.unhold(&id) {
+        app.save(&book);
         StatusCode::NO_CONTENT.into_response()
     } else {
         err(StatusCode::NOT_FOUND, format!("no hold {id}"))
@@ -357,7 +400,11 @@ async fn main() -> anyhow::Result<()> {
         Cmd::Serve { listen } => {
             let listener = tokio::net::TcpListener::bind(&listen).await.with_context(|| format!("listening on {listen}"))?;
             eprintln!("tasukeai listening on {listen}");
-            axum::serve(listener, router(App::new(cfg))).with_graceful_shutdown(shutdown()).await?;
+            let app = App::new(cfg)?;
+            if let Some(p) = &app.state {
+                eprintln!("tasukeai keeps leases and holds in {}", p.display());
+            }
+            axum::serve(listener, router(app)).with_graceful_shutdown(shutdown()).await?;
         }
         Cmd::Health { .. } | Cmd::Pick { .. } | Cmd::Release { .. } | Cmd::Hold { .. } | Cmd::Unhold { .. } | Cmd::Holds { .. } => unreachable!(),
     }
@@ -405,7 +452,7 @@ endpoint = "llm"
     async fn server() -> String {
         let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = l.local_addr().unwrap();
-        tokio::spawn(async move { axum::serve(l, router(App::new(Config::from_toml(CFG).unwrap()))).await.unwrap() });
+        tokio::spawn(async move { axum::serve(l, router(App::new(Config::from_toml(CFG).unwrap()).unwrap())).await.unwrap() });
         format!("http://{addr}")
     }
 
@@ -449,6 +496,34 @@ endpoint = "llm"
             Err(ureq::Error::Status(s, r)) => (s, r.into_json().unwrap_or_default()),
             Err(e) => panic!("{e}"),
         }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn state_file_survives_a_restart() {
+        let path = std::env::temp_dir().join(format!("tasukeai-http-{}.json", std::process::id()));
+        let cfg = format!("[state]\npath = {:?}\n{CFG}", path.display().to_string());
+        let start = |cfg: String| async move {
+            let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let addr = l.local_addr().unwrap();
+            let app = App::new(Config::from_toml(&cfg).unwrap()).unwrap();
+            let task = tokio::spawn(async move { axum::serve(l, router(app)).await.unwrap() });
+            (format!("http://{addr}"), task)
+        };
+        let (base, first) = start(cfg.clone()).await;
+        let b = base.clone();
+        tokio::task::spawn_blocking(move || {
+            assert_eq!(send("POST", &format!("{b}/holds"), json!({"machine": "a", "job": "many", "note": "fan"})).0, 201);
+            assert_eq!(call("POST", &format!("{b}/pick?job=big")).0, 200);
+        }).await.unwrap();
+        first.abort();
+        let (base, _second) = start(cfg).await;  // as after a restart: everything comes from the file
+        tokio::task::spawn_blocking(move || {
+            let holds = call("GET", &format!("{base}/holds")).1;
+            assert_eq!(holds[0]["note"], "fan");
+            assert_eq!(call("GET", &format!("{base}/leases")).1.as_array().unwrap().len(), 1);
+            assert_eq!(call("POST", &format!("{base}/pick?job=big")).0, 409, "a is still leased");
+        }).await.unwrap();
+        std::fs::remove_file(&path).ok();
     }
 
     #[tokio::test(flavor = "multi_thread")]

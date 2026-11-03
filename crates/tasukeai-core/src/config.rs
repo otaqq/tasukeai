@@ -140,6 +140,14 @@ fn default_lease() -> u64 {
     600
 }
 
+/// Where the process keeps its leases and holds across restarts.
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct State {
+    /// A JSON file, written whole on each change (to a temporary file, then renamed). None: memory only.
+    #[serde(default)]
+    pub path: Option<String>,
+}
+
 #[derive(Debug, Clone, Deserialize)]
 pub struct Config {
     /// Signals older than this many seconds count as unknown.
@@ -153,6 +161,8 @@ pub struct Config {
     pub machines: BTreeMap<String, Machine>,
     #[serde(default)]
     pub jobs: BTreeMap<String, Job>,
+    #[serde(default)]
+    pub state: State,
 }
 
 fn default_stale() -> u64 {

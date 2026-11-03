@@ -77,9 +77,11 @@ CLI (for scripts and workflow engines): `tasukeai pick <kind> --server URL` prin
 
 - **Configuration** (machines, jobs, rules, endpoints) is a file (TOML) and is not edited from the page: it belongs in
   version control (e.g. a Kubernetes ConfigMap from git), so what runs never drifts from what was reviewed.
-- **State** (leases, holds) is in memory today and lost on restart. Planned: `[state] path = ".../tasukeai.db"` keeps it
-  in SQLite (one file, safe writes); without it, memory as now (#1). The file belongs on a local disk, not NFS
-  (SQLite locking over network file systems is unreliable).
+- **State** (leases, holds): `[state] path = "/data/state.json"` keeps it in a JSON file, written whole after every
+  change (to a temporary file, then renamed, so a crash never leaves half a file) and loaded on start, dropping what
+  ran out meanwhile (v0.3.0, #1). Without it, memory only. A JSON file rather than SQLite: the state is small, has
+  one writer (the process, under one lock) and is always read whole; a rename is safe on network file systems too,
+  where SQLite's locking is not.
 
 Integrations stay outside the core: a LiteLLM callback that filters deployments with `/rank`, a workflow-engine task
 that calls `pick` and passes the machine on.
@@ -139,6 +141,6 @@ lease = "30m"
 ## Open questions
 
 - Rules: a tiny expression language, or fixed rule kinds with parameters.
-- Leases and holds across restarts: decided, SQLite when `[state] path` is set (see "Configuration and state").
+- Leases and holds across restarts: done, a JSON file when `[state] path` is set (see "Configuration and state").
 - Whether `rank` should also learn which machine already has a model loaded (fewer reloads).
 - Power and energy as a rule input (prefer the machine that uses less for the same work).

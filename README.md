@@ -52,8 +52,9 @@ cargo run -p tasukeai -- --config examples/tasukeai.toml assess train   # who ca
 | `DELETE /holds/<id>` | end a hold |
 
 A lease of an `exclusive` job holds the whole machine; a `spread` lease holds one slot of its own job. Decisions and
-leases are taken under one lock, so two callers never get the same slot. Leases and holds live in memory (a restart
-forgets them).
+leases are taken under one lock, so two callers never get the same slot. Leases and holds live in memory; with
+`[state] path = "/data/state.json"` they are also saved to that file after every change and loaded on start, so a
+restart keeps them (what ran out meanwhile is dropped).
 
 **Endpoints.** A machine may name addresses of its services (`endpoints = { llm = "http://desk:11434/v1" }`) and a
 job the one it uses (`endpoint = "llm"`). Each lease then carries `endpoint` (the URL), and `/rank` answers
