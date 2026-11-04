@@ -1,6 +1,7 @@
 //! tasukeai: tell which machine should take a piece of work now (process form; see docs/design.md).
 //!
-//! Collects signals (PromQL, HTTP checks; cached for [metrics] cache_seconds), decides, and keeps one lease book for
+//! Collects signals (PromQL, HTTP checks; `serve` collects them in the background every [metrics] cache_seconds),
+//! decides, and keeps one lease book for
 //! all callers: POST /pick and /spread lease, GET /rank does not; POST /holds keeps a machine out by hand.
 
 use anyhow::Context;
@@ -17,8 +18,11 @@ use serde_json::json;
 use std::{
     collections::HashMap,
     path::PathBuf,
-    sync::{Arc, Mutex},
-    time::{Instant, SystemTime, UNIX_EPOCH},
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc, Mutex,
+    },
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 use tasukeai_core::{assess, assess_with, collect, rank_with, Collected, Config, Leases, Rule};
 
@@ -158,6 +162,8 @@ fn now() -> u64 {
 struct App {
     cfg: Config,
     cache: Mutex<Option<(Instant, Collected)>>,
+    /// Set by refresh_in_background: the cache is kept fresh there, so requests never collect themselves.
+    refreshing: AtomicBool,
     leases: Mutex<Leases>,
     /// [state] path: the leases and holds are saved there after every change and loaded on start.
     state: Option<PathBuf>,
@@ -173,6 +179,7 @@ impl App {
         Ok(Arc::new(App {
             cfg,
             cache: Mutex::new(None),
+            refreshing: AtomicBool::new(false),
             leases: Mutex::new(book),
             state,
         }))
@@ -188,19 +195,40 @@ impl App {
         }
     }
 
-    /// Signals, collected again when the cached ones are older than [metrics] cache_seconds.
-    async fn signals(self: &Arc<Self>) -> Collected {
-        if let Some((at, c)) = self.cache.lock().unwrap().as_ref() {
-            if at.elapsed().as_secs() < self.cfg.metrics.cache_seconds {
-                return c.clone();
-            }
-        }
+    /// Collect now (on a blocking thread: checks of a machine that is off can take seconds) and keep the result.
+    async fn collect_now(self: &Arc<Self>) -> Collected {
         let app = self.clone();
         let fresh = tokio::task::spawn_blocking(move || collect(&app.cfg, now()))
             .await
             .unwrap_or_default();
         *self.cache.lock().unwrap() = Some((Instant::now(), fresh.clone()));
         fresh
+    }
+
+    /// The last collected signals. While refresh_in_background runs, they are returned at once, however slow the
+    /// collection is (a signal older than stale_after_seconds still counts as unknown, so a stuck refresh fails safe).
+    /// Without it, or before its first round, they are collected again when older than [metrics] cache_seconds.
+    async fn signals(self: &Arc<Self>) -> Collected {
+        if let Some((at, c)) = self.cache.lock().unwrap().as_ref() {
+            if self.refreshing.load(Ordering::Relaxed) || at.elapsed().as_secs() < self.cfg.metrics.cache_seconds {
+                return c.clone();
+            }
+        }
+        self.collect_now().await
+    }
+
+    /// Collect every [metrics] cache_seconds (at least 1 s) until the process ends, so that /rank, /pick and /spread
+    /// never wait for a slow query or a machine that does not answer.
+    fn refresh_in_background(self: &Arc<Self>) -> tokio::task::JoinHandle<()> {
+        let app = self.clone();
+        tokio::spawn(async move {
+            let every = Duration::from_secs(app.cfg.metrics.cache_seconds.max(1));
+            loop {
+                app.collect_now().await;
+                app.refreshing.store(true, Ordering::Relaxed);
+                tokio::time::sleep(every).await;
+            }
+        })
     }
 }
 
@@ -502,6 +530,7 @@ async fn main() -> anyhow::Result<()> {
             if let Some(p) = &app.state {
                 eprintln!("tasukeai keeps leases and holds in {}", p.display());
             }
+            app.refresh_in_background();
             axum::serve(listener, router(app))
                 .with_graceful_shutdown(shutdown())
                 .await?;
@@ -734,5 +763,34 @@ endpoint = "llm"
         })
         .await
         .unwrap();
+    }
+
+    /// A machine whose check never answers (as a machine that is off): with the background refresh, /rank answers at
+    /// once, also after the cache time has passed; it does not wait for the check's timeout.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn rank_does_not_wait_for_a_slow_check() {
+        let silent = std::net::TcpListener::bind("127.0.0.1:0").unwrap(); // accepts, never answers
+        let cfg = format!(
+            "[metrics]\ncache_seconds = 1\n{CFG}\n[[machines.b.checks]]\nsignal = \"slow\"\nurl = \"http://{}/\"\ntimeout_ms = 1500\n",
+            silent.local_addr().unwrap()
+        );
+        let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base = format!("http://{}", l.local_addr().unwrap());
+        let app = App::new(Config::from_toml(&cfg).unwrap()).unwrap();
+        app.refresh_in_background();
+        tokio::spawn(async move { axum::serve(l, router(app)).await.unwrap() });
+        tokio::time::sleep(Duration::from_millis(2000)).await; // the first round (one slow check) is done
+        for _ in 0..3 {
+            let b = base.clone();
+            let took = tokio::task::spawn_blocking(move || {
+                let t = Instant::now();
+                assert_eq!(call("GET", &format!("{b}/rank?job=chat")).0, 200);
+                t.elapsed()
+            })
+            .await
+            .unwrap();
+            assert!(took < Duration::from_millis(500), "/rank took {took:?}");
+            tokio::time::sleep(Duration::from_millis(1100)).await; // past cache_seconds
+        }
     }
 }

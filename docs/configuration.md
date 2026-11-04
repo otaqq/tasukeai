@@ -24,7 +24,7 @@ Keep the file in version control. It is never edited at run time; what changes a
 |---|---|---|
 | `url` | none | Base URL of a Prometheus-compatible query API (`/api/v1/query` is added). Without it, only HTTP checks give signals |
 | `timeout_ms` | `3000` | Timeout of one query |
-| `cache_seconds` | `10` | The process reuses collected signals this long before asking again |
+| `cache_seconds` | `10` | How often signals are collected. `serve` collects them in the background at this interval and answers every request from the last round at once, so a slow query or a machine that does not answer (each check waits up to its timeout) never delays `/rank`, `/pick` or `/spread`. A stuck round fails safe: its signals grow older than `stale_after_seconds` and count as unknown. The one-shot commands collect when they run |
 
 ## Signals
 
