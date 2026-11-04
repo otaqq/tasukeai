@@ -5,10 +5,14 @@
 Report it privately through GitHub: the repository's **Security** tab → **Report a vulnerability**. Do not open a
 public issue for it. Fixes go into the latest release only.
 
-## No authentication of its own
+## Authentication is optional
 
-The HTTP API has **no authentication**. Who may reach it is decided by your network: a private subnet, a firewall, or
-an Ingress restricted to networks you trust. Anyone who can reach port 9660 can:
+With `TASUKEAI_API_KEY` set, every route except `/health` needs that key (a bearer token or `X-API-Key`, compared in
+constant time; see [api.md](api.md)). One key for every caller: it lets a caller do everything below, there are no
+roles. Send it over TLS (an Ingress with a certificate) when the network is not yours.
+
+Without the variable the HTTP API has **no authentication**. Who may reach it is then decided by your network: a
+private subnet, a firewall, or an Ingress restricted to networks you trust. Anyone who can reach port 9660 can:
 
 - lease machines (`POST /pick`, `/spread`) and give back any lease, also other callers' (`DELETE /leases/<id>`);
 - keep machines out by hand and end any hold (`POST /holds`, `DELETE /holds/<id>`);

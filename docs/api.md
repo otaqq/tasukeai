@@ -1,7 +1,22 @@
 # HTTP API and CLI
 
-`tasukeai serve` answers on port 9660 (`--listen`, default `0.0.0.0:9660`). The API has no authentication yet (#2):
-keep it on a network you trust.
+`tasukeai serve` answers on port 9660 (`--listen`, default `0.0.0.0:9660`).
+
+## Authentication (optional)
+
+| `TASUKEAI_API_KEY` | What happens |
+|---|---|
+| not set | No authentication: anyone who reaches the port can use the API. `serve` says so on start. Keep it on a network you trust |
+| set | Every route except `GET /health` needs the key: `Authorization: Bearer <key>` or `X-API-Key: <key>`; without it, or with a wrong one, 401 |
+| set but empty | `serve` refuses to start (most likely a secret that did not load) |
+
+The CLI commands that talk to a server (`pick`, `release`, `hold`, `unhold`, `holds`) send the key from the same
+variable. `tasukeai health` (the container health check) needs none.
+
+```sh
+TASUKEAI_API_KEY=$(cat key) tasukeai serve
+curl -H "Authorization: Bearer $(cat key)" 'http://127.0.0.1:9660/rank?job=chat'
+```
 
 ## HTTP
 

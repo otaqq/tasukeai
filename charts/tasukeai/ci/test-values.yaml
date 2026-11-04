@@ -14,6 +14,8 @@ config: |
   mode = "exclusive"
 persistence:
   enabled: true
+apiKey:
+  existingSecret: tasukeai-api-key
 ingress:
   enabled: true
   className: nginx

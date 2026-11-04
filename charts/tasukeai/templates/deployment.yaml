@@ -44,6 +44,14 @@ spec:
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           securityContext:
             {{- toYaml .Values.securityContext | nindent 12 }}
+          {{- with .Values.apiKey.existingSecret }}
+          env:
+            - name: TASUKEAI_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ . }}
+                  key: {{ $.Values.apiKey.secretKey }}
+          {{- end }}
           ports:
             - name: http
               containerPort: 9660

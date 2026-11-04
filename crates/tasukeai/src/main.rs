@@ -3,11 +3,15 @@
 //! Collects signals (PromQL, HTTP checks; `serve` collects them in the background every [metrics] cache_seconds),
 //! decides, and keeps one lease book for
 //! all callers: POST /pick and /spread lease, GET /rank does not; POST /holds keeps a machine out by hand.
+//!
+//! Authentication is optional: with TASUKEAI_API_KEY set, every route but /health needs the key (Authorization:
+//! Bearer or X-API-Key), and the commands that talk to a server send it; without it the API is open.
 
 use anyhow::Context;
 use axum::{
-    extract::{Path, Query, State},
-    http::StatusCode,
+    extract::{Path, Query, Request, State},
+    http::{header, StatusCode},
+    middleware::{self, Next},
     response::{IntoResponse, Response},
     routing::{delete, get, post},
     Json, Router,
@@ -152,6 +156,73 @@ fn health_check(addr: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// The environment variable with the API key (server and client).
+const API_KEY_ENV: &str = "TASUKEAI_API_KEY";
+
+/// The API key from the environment: None when the variable is not set (no authentication). Set but empty (or only
+/// spaces) is an error: most likely a secret that did not load, and serving without a key would open the API.
+fn api_key_from_env() -> anyhow::Result<Option<String>> {
+    parse_key(std::env::var(API_KEY_ENV))
+}
+
+fn parse_key(var: Result<String, std::env::VarError>) -> anyhow::Result<Option<String>> {
+    match var {
+        Ok(k) if k.trim().is_empty() => {
+            anyhow::bail!("{API_KEY_ENV} is set but empty: unset it to serve without a key")
+        }
+        Ok(k) => Ok(Some(k.trim().to_string())),
+        Err(std::env::VarError::NotPresent) => Ok(None),
+        Err(e) => Err(anyhow::anyhow!("{API_KEY_ENV}: {e}")),
+    }
+}
+
+/// Equal in time that does not depend on where the first difference is (the length may show).
+fn same_key(a: &[u8], b: &[u8]) -> bool {
+    a.len() == b.len() && a.iter().zip(b).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
+}
+
+/// The key a request presents: `Authorization: Bearer <key>` or `X-API-Key: <key>`.
+fn presented_key(req: &Request) -> Option<&str> {
+    let h = req.headers();
+    if let Some(v) = h.get(header::AUTHORIZATION).and_then(|v| v.to_str().ok()) {
+        if let Some(k) = v.strip_prefix("Bearer ") {
+            return Some(k.trim());
+        }
+    }
+    h.get("x-api-key").and_then(|v| v.to_str().ok()).map(str::trim)
+}
+
+/// With an API key set, every route but /health needs it; 401 otherwise.
+async fn require_key(State(app): State<Arc<App>>, req: Request, next: Next) -> Response {
+    if let Some(key) = &app.api_key {
+        let ok = req.uri().path() == "/health"
+            || presented_key(&req).is_some_and(|k| same_key(k.as_bytes(), key.as_bytes()));
+        if !ok {
+            let mut r = err(
+                StatusCode::UNAUTHORIZED,
+                "missing or wrong API key (Authorization: Bearer <key> or X-API-Key)",
+            );
+            r.headers_mut()
+                .insert(header::WWW_AUTHENTICATE, header::HeaderValue::from_static("Bearer"));
+            return r;
+        }
+    }
+    next.run(req).await
+}
+
+/// A request to a running server, with the API key when TASUKEAI_API_KEY is set.
+fn client(method: &str, url: &str) -> anyhow::Result<ureq::Request> {
+    Ok(request_with(method, url, api_key_from_env()?.as_deref()))
+}
+
+fn request_with(method: &str, url: &str, key: Option<&str>) -> ureq::Request {
+    let r = ureq::request(method, url);
+    match key {
+        Some(k) => r.set("Authorization", &format!("Bearer {k}")),
+        None => r,
+    }
+}
+
 fn now() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -167,10 +238,17 @@ struct App {
     leases: Mutex<Leases>,
     /// [state] path: the leases and holds are saved there after every change and loaded on start.
     state: Option<PathBuf>,
+    /// TASUKEAI_API_KEY: required on every route but /health when set.
+    api_key: Option<String>,
 }
 
 impl App {
+    #[cfg(test)]
     fn new(cfg: Config) -> anyhow::Result<Arc<Self>> {
+        Self::with_key(cfg, None)
+    }
+
+    fn with_key(cfg: Config, api_key: Option<String>) -> anyhow::Result<Arc<Self>> {
         let state = cfg.state.path.as_ref().map(PathBuf::from);
         let book = match &state {
             Some(p) => Leases::load(p, now()).with_context(|| format!("loading the state file {}", p.display()))?,
@@ -182,6 +260,7 @@ impl App {
             refreshing: AtomicBool::new(false),
             leases: Mutex::new(book),
             state,
+            api_key,
         }))
     }
 
@@ -416,13 +495,14 @@ fn router(app: Arc<App>) -> Router {
         .route("/leases/{id}", delete(release_lease))
         .route("/holds", post(add_hold).get(list_holds))
         .route("/holds/{id}", delete(end_hold))
+        .layer(middleware::from_fn_with_state(app.clone(), require_key))
         .with_state(app)
 }
 
 /// tasukeai pick: ask a running server; print "machine lease-id", or the reasons and exit 75.
 fn pick_remote(server: &str, job: &str) -> anyhow::Result<()> {
     let url = format!("{}/pick", server.trim_end_matches('/'));
-    match ureq::post(&url).query("job", job).call() {
+    match client("POST", &url)?.query("job", job).call() {
         Ok(r) => {
             let v: serde_json::Value = r.into_json()?;
             println!(
@@ -461,7 +541,8 @@ async fn main() -> anyhow::Result<()> {
         }
         Cmd::Release { lease, server } => {
             let url = format!("{}/leases/{lease}", server.trim_end_matches('/'));
-            tokio::task::spawn_blocking(move || ureq::delete(&url).call().map(drop).map_err(Box::new)).await??;
+            tokio::task::spawn_blocking(move || client("DELETE", &url)?.call().map(drop).map_err(anyhow::Error::from))
+                .await??;
             return Ok(());
         }
         Cmd::Hold {
@@ -473,28 +554,31 @@ async fn main() -> anyhow::Result<()> {
         } => {
             let url = format!("{}/holds", server.trim_end_matches('/'));
             let body = json!({"machine": machine, "job": job, "minutes": minutes, "note": note});
-            let v: serde_json::Value = tokio::task::spawn_blocking(move || match ureq::post(&url).send_json(body) {
-                Ok(r) => r.into_json().map_err(anyhow::Error::from),
-                Err(ureq::Error::Status(_, r)) => {
-                    let v: serde_json::Value = r.into_json().unwrap_or_default();
-                    Err(anyhow::anyhow!("{}", v["error"].as_str().unwrap_or("refused")))
-                }
-                Err(e) => Err(e.into()),
-            })
-            .await??;
+            let v: serde_json::Value =
+                tokio::task::spawn_blocking(move || match client("POST", &url)?.send_json(body) {
+                    Ok(r) => r.into_json().map_err(anyhow::Error::from),
+                    Err(ureq::Error::Status(_, r)) => {
+                        let v: serde_json::Value = r.into_json().unwrap_or_default();
+                        Err(anyhow::anyhow!("{}", v["error"].as_str().unwrap_or("refused")))
+                    }
+                    Err(e) => Err(e.into()),
+                })
+                .await??;
             println!("{}", v["id"].as_str().unwrap_or(""));
             return Ok(());
         }
         Cmd::Unhold { hold, server } => {
             let url = format!("{}/holds/{hold}", server.trim_end_matches('/'));
-            tokio::task::spawn_blocking(move || ureq::delete(&url).call().map(drop).map_err(Box::new)).await??;
+            tokio::task::spawn_blocking(move || client("DELETE", &url)?.call().map(drop).map_err(anyhow::Error::from))
+                .await??;
             return Ok(());
         }
         Cmd::Holds { server } => {
             let url = format!("{}/holds", server.trim_end_matches('/'));
-            let v: serde_json::Value =
-                tokio::task::spawn_blocking(move || ureq::get(&url).call()?.into_json().map_err(anyhow::Error::from))
-                    .await??;
+            let v: serde_json::Value = tokio::task::spawn_blocking(move || {
+                client("GET", &url)?.call()?.into_json().map_err(anyhow::Error::from)
+            })
+            .await??;
             println!("{}", serde_json::to_string_pretty(&v)?);
             return Ok(());
         }
@@ -534,11 +618,17 @@ async fn main() -> anyhow::Result<()> {
             println!("{}", serde_json::to_string_pretty(&c)?);
         }
         Cmd::Serve { listen } => {
+            let key = api_key_from_env()?;
             let listener = tokio::net::TcpListener::bind(&listen)
                 .await
                 .with_context(|| format!("listening on {listen}"))?;
             eprintln!("tasukeai listening on {listen}");
-            let app = App::new(cfg)?;
+            if key.is_none() {
+                eprintln!(
+                    "tasukeai: no {API_KEY_ENV}: the API has no authentication, anyone who reaches the port can use it"
+                );
+            }
+            let app = App::with_key(cfg, key)?;
             if let Some(p) = &app.state {
                 eprintln!("tasukeai keeps leases and holds in {}", p.display());
             }
@@ -613,6 +703,83 @@ endpoint = "llm"
             Err(ureq::Error::Status(s, r)) => (s, r.into_json().unwrap_or_default()),
             Err(e) => panic!("{e}"),
         }
+    }
+
+    /// The real router with an API key, on a random port.
+    async fn server_with_key(key: &str) -> String {
+        let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = l.local_addr().unwrap();
+        let app = App::with_key(Config::from_toml(CFG).unwrap(), Some(key.into())).unwrap();
+        tokio::spawn(async move { axum::serve(l, router(app)).await.unwrap() });
+        format!("http://{addr}")
+    }
+
+    fn status(r: Result<ureq::Response, ureq::Error>) -> u16 {
+        match r {
+            Ok(r) => r.status(),
+            Err(ureq::Error::Status(s, _)) => s,
+            Err(e) => panic!("{e}"),
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn api_key_when_set() {
+        let base = server_with_key("s3cret").await;
+        tokio::task::spawn_blocking(move || {
+            assert_eq!(
+                status(ureq::get(&format!("{base}/health")).call()),
+                200,
+                "health needs no key"
+            );
+            assert_eq!(status(ureq::get(&format!("{base}/rank?job=chat")).call()), 401);
+            assert_eq!(
+                status(request_with("GET", &format!("{base}/rank?job=chat"), Some("wrong")).call()),
+                401
+            );
+            assert_eq!(
+                status(request_with("GET", &format!("{base}/rank?job=chat"), Some("s3cret")).call()),
+                200
+            );
+            let r = ureq::get(&format!("{base}/machines")).set("X-API-Key", "s3cret").call();
+            assert_eq!(status(r), 200, "X-API-Key works too");
+            // the client of the CLI commands: pick, then release, with the key
+            let v: serde_json::Value = request_with("POST", &format!("{base}/pick?job=big"), Some("s3cret"))
+                .call()
+                .unwrap()
+                .into_json()
+                .unwrap();
+            let id = v["lease"]["id"].as_str().unwrap();
+            assert_eq!(status(ureq::delete(&format!("{base}/leases/{id}")).call()), 401);
+            assert_eq!(
+                status(request_with("DELETE", &format!("{base}/leases/{id}"), Some("s3cret")).call()),
+                204
+            );
+        })
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn no_key_no_authentication() {
+        let base = server().await;
+        tokio::task::spawn_blocking(move || {
+            assert_eq!(status(ureq::get(&format!("{base}/rank?job=chat")).call()), 200);
+            assert_eq!(
+                status(request_with("GET", &format!("{base}/rank?job=chat"), Some("any")).call()),
+                200
+            );
+        })
+        .await
+        .unwrap();
+    }
+
+    #[test]
+    fn api_key_from_the_environment() {
+        assert_eq!(parse_key(Err(std::env::VarError::NotPresent)).unwrap(), None);
+        assert_eq!(parse_key(Ok(" k ".into())).unwrap(), Some("k".into()));
+        assert!(parse_key(Ok("".into())).is_err(), "set but empty: refuse to start");
+        assert!(parse_key(Ok("  ".into())).is_err());
+        assert!(same_key(b"abc", b"abc") && !same_key(b"abc", b"abd") && !same_key(b"abc", b"ab"));
     }
 
     #[tokio::test(flavor = "multi_thread")]

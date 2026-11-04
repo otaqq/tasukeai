@@ -71,7 +71,7 @@ CLI (for scripts and workflow engines): `tasukeai pick <kind> --server URL` prin
 - A page at `/ui`, served by the same binary from the same HTTP API, so the CLI and the page always agree. Off unless
   `[ui] enabled = true`.
 - First read-only: machines, signals, why each is not usable, leases, holds. Buttons that change things (hold,
-  release) come after the API has authentication (#2), because anyone who reaches the page could otherwise use them.
+  release) come later, and only with an API key set, because anyone who reaches the page could otherwise use them.
 
 ### Configuration and state
 

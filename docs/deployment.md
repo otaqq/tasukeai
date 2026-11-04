@@ -12,7 +12,7 @@ Each [release](https://github.com/otaqq/tasukeai/releases) has static Linux bina
 x86_64 and aarch64, with `SHA256SUMS`:
 
 ```sh
-v=v0.7.0; t=x86_64-unknown-linux-musl          # or aarch64-unknown-linux-musl
+v=v0.8.0; t=x86_64-unknown-linux-musl          # or aarch64-unknown-linux-musl
 curl -fsSLO https://github.com/otaqq/tasukeai/releases/download/$v/tasukeai-$v-$t.tar.gz
 curl -fsSL https://github.com/otaqq/tasukeai/releases/download/$v/SHA256SUMS | sha256sum -c --ignore-missing
 tar -xzf tasukeai-$v-$t.tar.gz && ./tasukeai-$v-$t/tasukeai --version
@@ -92,7 +92,7 @@ config: |
 persistence:
   enabled: true
 EOF
-helm install tasukeai oci://ghcr.io/otaqq/charts/tasukeai --version 0.7.0 -n tasukeai --create-namespace -f values.yaml
+helm install tasukeai oci://ghcr.io/otaqq/charts/tasukeai --version 0.8.0 -n tasukeai --create-namespace -f values.yaml
 ```
 
 ```mermaid
@@ -126,7 +126,11 @@ What the chart does, and why:
   "/data/state.json"` in the configuration, or leases and holds stay in memory. The PVC is kept on `helm uninstall`
   (`helm.sh/resource-policy: keep`), so installing again brings the leases and holds back.
 - **Security.** Non-root uid 65532, read-only root file system, no capabilities, RuntimeDefault seccomp, no service
-  account token. The HTTP API has no authentication yet (#2); enable the Ingress only for networks you trust.
+  account token. Without `apiKey.existingSecret` the HTTP API has no authentication; enable the Ingress only for
+  networks you trust.
+- **API key.** `apiKey.existingSecret` names a Secret you create; its key `apiKey.secretKey` (default `api-key`)
+  becomes `TASUKEAI_API_KEY`, and every route but `/health` needs it ([api.md](api.md)). Default: no key.
+  `kubectl create secret generic tasukeai-api-key --from-literal=api-key="$(openssl rand -hex 32)"`.
 - **Resources.** Requests `10m` CPU and `32Mi`, limit `128Mi` memory, far above the measured use (below).
 
 Other values: `image`, `service`, `ingress`, `resources`, probes, `nodeSelector`, `tolerations`, `affinity`,

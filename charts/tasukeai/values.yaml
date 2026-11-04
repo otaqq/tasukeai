@@ -47,7 +47,12 @@ service:
   type: ClusterIP
   port: 9660
 
-# The HTTP API has no authentication yet: expose it only to networks you trust
+# Optional API key: the name of a Secret you create; its key secretKey becomes TASUKEAI_API_KEY, and every route
+# but /health needs it (docs/api.md). Empty: no authentication, so expose the API only to networks you trust.
+apiKey:
+  existingSecret: ""
+  secretKey: api-key
+
 ingress:
   enabled: false
   className: ""
