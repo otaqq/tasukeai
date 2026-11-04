@@ -39,7 +39,7 @@ jobs:
           bin/${{ matrix.arch }}/tasukeai --version
           n=tasukeai-${GITHUB_REF_NAME}-${{ matrix.triple }}
           mkdir "$n"
-          cp bin/${{ matrix.arch }}/tasukeai LICENSE README.md dist/systemd/tasukeai.service "$n/"
+          cp bin/${{ matrix.arch }}/tasukeai LICENSE NOTICE README.md dist/systemd/tasukeai.service "$n/"
           tar -czf "$n.tar.gz" "$n"
       - uses: actions/upload-artifact@v7
         with:

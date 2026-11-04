@@ -9,7 +9,7 @@ home: https://github.com/otaqq/tasukeai
 sources:
   - https://github.com/otaqq/tasukeai
 annotations:
-  artifacthub.io/license: MIT
+  artifacthub.io/license: Apache-2.0
 keywords:
   - scheduling
   - prometheus
