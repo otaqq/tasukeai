@@ -55,6 +55,7 @@ curl -s -X POST 'localhost:9660/pick?job=train'
 | [HTTP API and CLI](docs/api.md) | calls, leases, endpoints, holds, scripts |
 | [Deployment](docs/deployment.md) | binary, systemd, Docker, Kubernetes (Helm), footprint |
 | [Development](docs/development.md) | building, CI, releases |
+| [Security](docs/security.md) | reporting a vulnerability, the trust model, hardening |
 | [Design notes](docs/design.md) | why, concepts, open questions |
 
 ## The name
