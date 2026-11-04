@@ -14,7 +14,7 @@ keep it on a network you trust.
 | `POST /spread?job=<kind>&count=N` | `spread`: up to N leases, a machine once per free slot; 409 when none |
 | `GET /rank?job=<kind>[&min.<signal>=x][&max.<signal>=x]` | `rank`: `{machines, endpoints, assessment}`, no lease |
 | `GET /leases` | the leases that have not run out |
-| `POST /leases/<id>/renew` | extend a lease by its job's `lease_seconds` |
+| `POST /leases/<id>/renew` | assess the machine again, then extend the lease by its job's `lease_seconds`; 409 `{error: "revoked", lease, reasons}` (and the lease dropped) when the machine no longer passes; 404 when there is no such lease |
 | `DELETE /leases/<id>` | give the machine back |
 | `POST /holds` | keep a machine out by hand: `{"machine", "job"?, "minutes"?, "note"?}`; 201 with the hold |
 | `GET /holds` | the holds that have not run out |
@@ -27,6 +27,12 @@ its metrics catch up or while the work loads its model. A lease of an `exclusive
 `spread` lease holds one slot of its own job. Decisions and leases are taken under one lock, so two callers never get
 the same slot.
 
+A renew assesses the machine again with the same checks as a new lease (holds, the machine's and the job's rules; the
+holder's own lease and the other leases of the same job on that machine do not count against it). When a check fails
+(its owner came back, it got hot, someone set a hold) the answer is 409 with the reasons and the lease is gone, so a
+caller that renews every few minutes stops sending work there soon after. There is no grace time: one failed check at
+renew time ends the lease. A signal that flickers should get its margin in the rule itself (or in what reports it).
+
 ```mermaid
 sequenceDiagram
     participant W as Caller (workflow, script)
@@ -35,8 +41,9 @@ sequenceDiagram
     W->>T: POST /pick?job=train
     T-->>W: machine, lease (and endpoint)
     W->>M: run the work
-    loop longer than lease_seconds
+    loop every few minutes
         W->>T: POST /leases/{id}/renew
+        T-->>W: 200, or 409 + reasons: stop using the machine
     end
     W->>T: DELETE /leases/{id}
     Note over T: a lease that is not renewed<br/>runs out by itself

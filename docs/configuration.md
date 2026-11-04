@@ -77,7 +77,7 @@ rule on `up` is not offered (fail closed).
 | `accel` | any | Accelerators the job can use: `["cuda"]` |
 | `vram_gb`, `ram_gb` | `0` | Installed memory the job needs at least |
 | `rules` | none | Rules of the job, on top of the machine's |
-| `lease_seconds` | `600` | How long a lease lasts (renew it for longer work) |
+| `lease_seconds` | `600` | How long a lease lasts (renew it for longer work; a renew assesses the machine again) |
 | `endpoint` | none | Which machine endpoint the job uses; leases and `rank` answers carry its URL |
 
 | Mode | For | Answer |

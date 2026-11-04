@@ -1,10 +1,11 @@
 //! Leases: short reservations of machines handed out by `exclusive` and `spread`, so that the next decision (before
 //! the metrics show the new load) does not hand the same machine out again; and holds: machines a person keeps out
-//! by hand. In memory; the process keeps one book for all its callers, a library caller keeps its own. The book can
+//! by hand. A lease is assessed again when it is renewed, so a machine that stops passing its checks is taken back
+//! from a holder that renews. In memory; the process keeps one book for all its callers, a library caller keeps its own. The book can
 //! be saved to and loaded from a JSON file ([state] path), so a restart keeps both.
 
 use crate::config::Config;
-use crate::decide::{pick, spread, Assessment, DecideError, Hold, Lease, Snapshot};
+use crate::decide::{assess, pick, spread, Assessment, DecideError, Hold, Lease, Snapshot};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 
@@ -59,7 +60,7 @@ impl Leases {
     }
 
     /// Keep a machine out by hand: for every job, or one job; until a time (None: until unhold). Leases already given
-    /// stay until they run out or are released.
+    /// stay until they run out, are released or are renewed (a renew is refused while the hold lasts).
     pub fn hold(
         &mut self,
         cfg: &Config,
@@ -154,18 +155,59 @@ impl Leases {
         self.list.len() != before
     }
 
-    /// Extend a lease by its job's lease time from now (long jobs call this while they run).
-    pub fn renew(&mut self, cfg: &Config, id: &str, now: u64) -> Option<Lease> {
-        self.active(now);
-        let l = self.list.iter_mut().find(|l| l.id == id)?;
-        l.until = now + cfg.jobs.get(&l.job).map(|j| j.lease_seconds).unwrap_or(600);
-        Some(l.clone())
+    /// Extend a lease by its job's lease time from now (long jobs call this while they run), after assessing its
+    /// machine again: when the machine no longer passes (its owner came back, it got hot, a hold by hand), the lease
+    /// is dropped and the reasons are returned. The holder's own lease and the other leases of the same job on the
+    /// same machine do not count against it (a machine with two slots of the job is not "all slots leased").
+    pub fn renew(&mut self, cfg: &Config, id: &str, snap: &Snapshot, now: u64) -> Result<Lease, RenewError> {
+        self.prune(now);
+        let l = self
+            .list
+            .iter()
+            .find(|l| l.id == id)
+            .cloned()
+            .ok_or(RenewError::NotFound)?;
+        let others: Vec<Lease> = self
+            .list
+            .iter()
+            .filter(|o| !(o.machine == l.machine && o.job == l.job))
+            .cloned()
+            .collect();
+        let reasons = match assess(cfg, &l.job, snap, &others, &self.holds, now) {
+            Ok(a) => a
+                .rejected
+                .into_iter()
+                .find(|r| r.machine == l.machine)
+                .map(|r| r.reasons),
+            Err(e) => Some(vec![e.to_string()]), // the job left the configuration
+        };
+        if let Some(reasons) = reasons {
+            self.release(id);
+            return Err(RenewError::Revoked {
+                lease: Box::new(l),
+                reasons,
+            });
+        }
+        let seconds = cfg.jobs.get(&l.job).map(|j| j.lease_seconds).unwrap_or(600);
+        let l = self.list.iter_mut().find(|x| x.id == id).expect("found above");
+        l.until = now + seconds;
+        Ok(l.clone())
     }
+}
+
+/// Why a lease was not renewed.
+#[derive(Debug, Clone, PartialEq)]
+pub enum RenewError {
+    /// No such lease (released, run out, or never given).
+    NotFound,
+    /// The machine no longer passes the job's checks; the lease is gone.
+    Revoked { lease: Box<Lease>, reasons: Vec<String> },
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::decide::Signals;
 
     const CFG: &str = r#"
 [machines.a]
@@ -217,12 +259,52 @@ lease_seconds = 50
             book.spread(&cfg, "many", 1, &snap, 10).unwrap().0.is_empty(),
             "all slots leased"
         );
-        let renewed = book.renew(&cfg, &ls[0].id, 40).unwrap();
-        assert_eq!(renewed.until, 90);
+        let renewed = book.renew(&cfg, &ls[0].id, &snap, 40).unwrap();
+        assert_eq!(
+            renewed.until, 90,
+            "the other leases of machine a do not count against it"
+        );
         assert_eq!(book.active(60).len(), 1, "the renewed one is still there");
-        assert!(book.renew(&cfg, "nope", 60).is_none());
+        assert_eq!(book.renew(&cfg, "nope", &snap, 60), Err(RenewError::NotFound));
         // the exclusive job cannot take a while a spread lease... it can: spread leases hold their own slots only
         assert_eq!(book.pick(&cfg, "big", &snap, 60).unwrap().0.unwrap().machine, "a");
+    }
+
+    #[test]
+    fn renew_assesses_the_machine_again() {
+        let cfg = Config::from_toml(&format!(
+            "{CFG}\n[[machines.a.rules]]\nsignal = \"idle_seconds\"\nmin = 300\nbecause = \"someone is using it\"\n"
+        ))
+        .unwrap();
+        let mut book = Leases::new();
+        let mut snap = Snapshot::new();
+        snap.insert("a".into(), Signals::from([("idle_seconds".to_string(), (900.0, 0))]));
+        let (ls, _) = book.spread(&cfg, "many", 2, &snap, 0).unwrap();
+        assert_eq!(
+            ls.iter().map(|l| l.machine.as_str()).collect::<Vec<_>>(),
+            vec!["a", "a"]
+        );
+        assert!(book.renew(&cfg, &ls[1].id, &snap, 10).is_ok());
+        // the owner comes back
+        snap.insert("a".into(), Signals::from([("idle_seconds".to_string(), (5.0, 20))]));
+        match book.renew(&cfg, &ls[0].id, &snap, 20) {
+            Err(RenewError::Revoked { lease, reasons }) => {
+                assert_eq!(lease.id, ls[0].id);
+                assert!(reasons.iter().any(|r| r.contains("someone is using it")), "{reasons:?}");
+            }
+            other => panic!("{other:?}"),
+        }
+        assert_eq!(book.active(20).len(), 1, "only the refused lease is gone");
+        assert_eq!(book.renew(&cfg, &ls[0].id, &snap, 20), Err(RenewError::NotFound));
+        // a hold by hand refuses the next renew too
+        let mut book = Leases::new();
+        let (ls, _) = book.spread(&cfg, "many", 3, &Snapshot::new(), 0).unwrap();
+        let b = ls.iter().find(|l| l.machine == "b").unwrap();
+        book.hold(&cfg, "b", None, None, "game", 0).unwrap();
+        assert!(matches!(
+            book.renew(&cfg, &b.id, &Snapshot::new(), 10),
+            Err(RenewError::Revoked { .. })
+        ));
     }
 
     #[test]

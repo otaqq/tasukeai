@@ -13,7 +13,7 @@ pub use decide::{
     assess, assess_with, pick, rank, rank_with, spread, Assessment, Candidate, DecideError, Hold, Lease, Rejected,
     Signals, Snapshot,
 };
-pub use leases::Leases;
+pub use leases::{Leases, RenewError};
 
 #[cfg(test)]
 mod tests {

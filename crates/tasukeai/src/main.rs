@@ -24,7 +24,7 @@ use std::{
     },
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
-use tasukeai_core::{assess, assess_with, collect, rank_with, Collected, Config, Leases, Rule};
+use tasukeai_core::{assess, assess_with, collect, rank_with, Collected, Config, Leases, RenewError, Rule};
 
 /// Rules of the caller for one decision, from the query: min.<signal>=<number>, max.<signal>=<number> (e.g. the free
 /// VRAM a model needs: min.vram_free_gb=10). Like configured rules, a missing or stale signal fails them.
@@ -343,14 +343,26 @@ async fn list_leases(State(app): State<Arc<App>>) -> Json<serde_json::Value> {
     Json(json!(app.leases.lock().unwrap().active(now())))
 }
 
+/// POST /leases/{id}/renew: extend the lease after assessing its machine again; 409 with the reasons (and the lease
+/// dropped) when the machine no longer passes.
 async fn renew_lease(State(app): State<Arc<App>>, Path(id): Path<String>) -> Response {
+    let c = app.signals().await;
     let mut book = app.leases.lock().unwrap();
-    match book.renew(&app.cfg, &id, now()) {
-        Some(l) => {
+    let r = book.renew(&app.cfg, &id, &c.snapshot, now());
+    match r {
+        Ok(l) => {
             app.save(&book);
             Json(l).into_response()
         }
-        None => err(StatusCode::NOT_FOUND, format!("no lease {id}")),
+        Err(RenewError::Revoked { lease, reasons }) => {
+            app.save(&book);
+            (
+                StatusCode::CONFLICT,
+                Json(json!({"error": "revoked", "lease": lease, "reasons": reasons})),
+            )
+                .into_response()
+        }
+        Err(RenewError::NotFound) => err(StatusCode::NOT_FOUND, format!("no lease {id}")),
     }
 }
 
@@ -712,6 +724,45 @@ endpoint = "llm"
                 call("GET", &format!("{base}/rank?job=chat")).1["machines"],
                 json!(["a", "b"]),
                 "without them as before"
+            );
+        })
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn renew_refuses_a_machine_that_no_longer_passes() {
+        let base = server().await;
+        tokio::task::spawn_blocking(move || {
+            let (_, v) = call("POST", &format!("{base}/spread?job=many&count=3"));
+            let b = v["leases"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|l| l["machine"] == "b")
+                .unwrap()["id"]
+                .as_str()
+                .unwrap()
+                .to_string();
+            assert_eq!(call("POST", &format!("{base}/leases/{b}/renew")).0, 200);
+            let (s, _) = send(
+                "POST",
+                &format!("{base}/holds"),
+                json!({"machine": "b", "note": "game"}),
+            );
+            assert_eq!(s, 201);
+            let (s, v) = call("POST", &format!("{base}/leases/{b}/renew"));
+            assert_eq!((s, v["error"].as_str()), (409, Some("revoked")));
+            assert!(v["reasons"].to_string().contains("game"), "{v}");
+            assert_eq!(
+                call("POST", &format!("{base}/leases/{b}/renew")).0,
+                404,
+                "the lease is gone"
+            );
+            assert_eq!(
+                call("GET", &format!("{base}/leases")).1.as_array().unwrap().len(),
+                2,
+                "a keeps its two"
             );
         })
         .await

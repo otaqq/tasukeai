@@ -55,10 +55,10 @@ HTTP (JSON):
 - `POST /pick?job=<kind>` — `exclusive`: the chosen machine and its lease; 409 with the reasons when none is free.
 - `POST /spread?job=<kind>&count=N` — `spread`: up to N leases (a machine once per slot); 409 when none.
 - `GET /rank?job=<kind>` — `rank`: usable machines in order, no lease.
-- `GET /leases`, `POST /leases/<id>/renew` (long jobs extend their lease), `DELETE /leases/<id>` (the job ended or did
-  not start).
+- `GET /leases`, `POST /leases/<id>/renew` (long jobs extend their lease; the machine is assessed again and a failed
+  check ends the lease with 409), `DELETE /leases/<id>` (the job ended or did not start).
 - `POST /holds` (`{"machine", "job"?, "minutes"?, "note"?}`), `GET /holds`, `DELETE /holds/<id>` — holds by hand.
-  Setting a hold does not touch leases already given (they run out or are released; taking them back is #7).
+  Setting a hold does not touch leases already given right away; their next renew is refused.
 - Planned: `GET /metrics` — tasukeai's own state for Prometheus (decisions, leases, reasons).
 
 CLI (for scripts and workflow engines): `tasukeai pick <kind> --server URL` prints the machine name and the lease id
