@@ -147,7 +147,9 @@ enabled = true
 ```
 
 A read-only page at `/ui`: for each job the usable machines and why the others are not, every machine's signals with
-their age (stale ones marked), the signals that could not be collected, leases and holds; it refreshes every 5 s.
+their age (stale ones marked) and a small line of the last hour, the signals that could not be collected, leases and
+holds; it refreshes every 5 s. The lines come from what the page has read since it was opened (kept in the browser
+tab, one point per collection, the last hour only: about 1 MB for 75 signals); the server keeps no history.
 Off by default, and then the routes do not exist. Its HTML, script and style are built into the binary (about 10 KB)
 and served as they are; the browser reads the same JSON API as the CLI, so the page costs the server nothing between
 requests. Turn it on for one node where several run. With `TASUKEAI_API_KEY` set, the page's files are served without
