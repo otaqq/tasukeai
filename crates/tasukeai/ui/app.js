@@ -91,12 +91,15 @@ function remember(m) {
 const SVG = "http://www.w3.org/2000/svg";
 const fmt = (v) => (Number.isInteger(v) ? String(v) : v.toFixed(2));
 
-// A line over the last hour, scaled to its own minimum and maximum; with fewer than 2 points, nothing.
+// A line over the points kept (up to the last hour), scaled to their minimum and maximum; with fewer than 2, nothing.
 function sparkline(pts, now) {
   if (!pts || pts.length < 2) return el("span", { class: "spark" });
   const w = 80, h = 18, values = pts.map((p) => p[1]);
   const lo = Math.min(...values), hi = Math.max(...values);
-  const x = (t) => (w * (t - (now - HISTORY_SECONDS))) / HISTORY_SECONDS;
+  // across the points there are (since the page was opened, up to an hour), not a fixed hour: a few minutes of points
+  // on an hour's width would sit in the last pixels
+  const t0 = pts[0][0], span = Math.max(1, now - t0);
+  const x = (t) => (w * (t - t0)) / span;
   const y = (v) => (hi === lo ? h / 2 : h - 1 - ((h - 2) * (v - lo)) / (hi - lo));
   const svg = document.createElementNS(SVG, "svg");
   svg.setAttribute("class", "spark");

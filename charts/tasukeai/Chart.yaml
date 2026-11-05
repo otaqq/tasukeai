@@ -3,8 +3,8 @@ name: tasukeai
 description: Tells which machine should take a piece of work now, from the metrics the machines already export
 type: application
 # Both follow the version in Cargo.toml; release.yml checks that they match the tag
-version: 0.9.1
-appVersion: "0.9.1"
+version: 0.9.2
+appVersion: "0.9.2"
 home: https://github.com/otaqq/tasukeai
 sources:
   - https://github.com/otaqq/tasukeai
