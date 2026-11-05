@@ -71,6 +71,48 @@ function drawJobs(jobs, assessments) {
   });
 }
 
+// History for the small lines, kept in this tab only: machine -> signal -> [[collected at, value], ...], one point
+// per collection (the same collected-at is not added twice), the last HISTORY_SECONDS only. About 50 bytes a point:
+// 75 signals x 240 points (one hour, collected every 15 s) is about 1 MB.
+const HISTORY_SECONDS = 3600;
+const history = {};
+
+function remember(m) {
+  for (const [machine, signals] of Object.entries(m.snapshot || {})) {
+    const h = (history[machine] ||= {});
+    for (const [signal, [value, at]] of Object.entries(signals)) {
+      const pts = (h[signal] ||= []);
+      if (!pts.length || pts[pts.length - 1][0] !== at) pts.push([at, value]);
+      while (pts.length && pts[0][0] < m.now - HISTORY_SECONDS) pts.shift();
+    }
+  }
+}
+
+const SVG = "http://www.w3.org/2000/svg";
+const fmt = (v) => (Number.isInteger(v) ? String(v) : v.toFixed(2));
+
+// A line over the last hour, scaled to its own minimum and maximum; with fewer than 2 points, nothing.
+function sparkline(pts, now) {
+  if (!pts || pts.length < 2) return el("span", { class: "spark" });
+  const w = 80, h = 18, values = pts.map((p) => p[1]);
+  const lo = Math.min(...values), hi = Math.max(...values);
+  const x = (t) => (w * (t - (now - HISTORY_SECONDS))) / HISTORY_SECONDS;
+  const y = (v) => (hi === lo ? h / 2 : h - 1 - ((h - 2) * (v - lo)) / (hi - lo));
+  const svg = document.createElementNS(SVG, "svg");
+  svg.setAttribute("class", "spark");
+  svg.setAttribute("viewBox", `0 0 ${w} ${h}`);
+  svg.setAttribute("width", w);
+  svg.setAttribute("height", h);
+  const line = document.createElementNS(SVG, "polyline");
+  line.setAttribute("points", pts.map(([t, v]) => `${x(t).toFixed(1)},${y(v).toFixed(1)}`).join(" "));
+  svg.append(line);
+  const title = document.createElementNS(SVG, "title");
+  const mins = Math.round((now - pts[0][0]) / 60);
+  title.textContent = `last ${mins} min: min ${fmt(lo)}, max ${fmt(hi)}, now ${fmt(values[values.length - 1])}`;
+  svg.append(title);
+  return svg;
+}
+
 function drawMachines(m, stale) {
   const snap = m.snapshot || {};
   const names = Object.keys(snap).sort();
@@ -80,9 +122,8 @@ function drawMachines(m, stale) {
       const v = snap[n][s];
       if (!v) return el("td", { class: "num muted" }, "–");
       const age = Math.max(0, m.now - v[1]);
-      const val = Number.isInteger(v[0]) ? v[0] : v[0].toFixed(2);
       return el("td", { class: "num" + (age > stale ? " stale" : ""), title: `${age} s old` },
-        val, el("span", { class: "muted" }, ` ${age}s`));
+        sparkline((history[n] || {})[s], m.now), fmt(v[0]), el("span", { class: "muted" }, ` ${age}s`));
     })));
   const t = $("machines");
   t.replaceChildren();
@@ -105,6 +146,7 @@ async function refresh() {
       jobs.jobs.map((j) => get("assess?job=" + encodeURIComponent(j.name)).catch(() => null)));
     const now = machines.now;
     drawJobs(jobs.jobs, assessments);
+    remember(machines);
     drawMachines(machines, jobs.stale_after_seconds);
     table($("leases"), ["machine", "job", "ends", "endpoint", "id"],
       leases.map((l) => el("tr", {}, el("td", {}, l.machine), el("td", {}, l.job), el("td", {}, when(l.until, now)),
