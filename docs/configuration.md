@@ -17,6 +17,7 @@ Keep the file in version control. It is never edited at run time; what changes a
 | `[machines.<name>]` | required | The machines that may take work |
 | `[jobs.<name>]` | | The kinds of work, each with a mode |
 | `[state]` | memory only | Where leases and holds are kept across restarts |
+| `[ui]` | off | The admin page at `/ui` (below) |
 
 ## Metrics
 
@@ -137,3 +138,17 @@ path = "/data/state.json"
 Leases and holds live in memory. With `[state] path` they are also written to that JSON file after every change (to a
 temporary file, then renamed) and loaded on start; what ran out meanwhile is dropped. Put the file on a disk of its
 own, such as a small persistent volume.
+
+## Admin page
+
+```toml
+[ui]
+enabled = true
+```
+
+A read-only page at `/ui`: for each job the usable machines and why the others are not, every machine's signals with
+their age (stale ones marked), the signals that could not be collected, leases and holds; it refreshes every 5 s.
+Off by default, and then the routes do not exist. Its HTML, script and style are built into the binary (about 10 KB)
+and served as they are; the browser reads the same JSON API as the CLI, so the page costs the server nothing between
+requests. Turn it on for one node where several run. With `TASUKEAI_API_KEY` set, the page's files are served without
+the key (they hold no data) and the page asks for the key, keeps it in the browser tab and sends it on its API calls.

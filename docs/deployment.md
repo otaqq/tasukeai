@@ -12,7 +12,7 @@ Each [release](https://github.com/otaqq/tasukeai/releases) has static Linux bina
 x86_64 and aarch64, with `SHA256SUMS`:
 
 ```sh
-v=v0.8.0; t=x86_64-unknown-linux-musl          # or aarch64-unknown-linux-musl
+v=v0.9.0; t=x86_64-unknown-linux-musl          # or aarch64-unknown-linux-musl
 curl -fsSLO https://github.com/otaqq/tasukeai/releases/download/$v/tasukeai-$v-$t.tar.gz
 curl -fsSL https://github.com/otaqq/tasukeai/releases/download/$v/SHA256SUMS | sha256sum -c --ignore-missing
 tar -xzf tasukeai-$v-$t.tar.gz && ./tasukeai-$v-$t/tasukeai --version
@@ -92,7 +92,7 @@ config: |
 persistence:
   enabled: true
 EOF
-helm install tasukeai oci://ghcr.io/otaqq/charts/tasukeai --version 0.8.0 -n tasukeai --create-namespace -f values.yaml
+helm install tasukeai oci://ghcr.io/otaqq/charts/tasukeai --version 0.9.0 -n tasukeai --create-namespace -f values.yaml
 ```
 
 ```mermaid

@@ -8,7 +8,7 @@ pub mod decide;
 pub mod leases;
 
 pub use collect::{collect, Collected};
-pub use config::{Check, Config, ConfigError, Job, Machine, Metrics, Mode, Rule, State};
+pub use config::{Check, Config, ConfigError, Job, Machine, Metrics, Mode, Rule, State, Ui};
 pub use decide::{
     assess, assess_with, pick, rank, rank_with, spread, Assessment, Candidate, DecideError, Hold, Lease, Rejected,
     Signals, Snapshot,

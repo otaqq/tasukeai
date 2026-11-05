@@ -195,7 +195,10 @@ fn presented_key(req: &Request) -> Option<&str> {
 /// With an API key set, every route but /health needs it; 401 otherwise.
 async fn require_key(State(app): State<Arc<App>>, req: Request, next: Next) -> Response {
     if let Some(key) = &app.api_key {
-        let ok = req.uri().path() == "/health"
+        // /health, and the admin page's static files (no data in them; the page sends the key on its API calls)
+        let path = req.uri().path();
+        let ok = path == "/health"
+            || (app.cfg.ui.enabled && (path == "/ui" || path.starts_with("/ui/")))
             || presented_key(&req).is_some_and(|k| same_key(k.as_bytes(), key.as_bytes()));
         if !ok {
             let mut r = err(
@@ -326,12 +329,50 @@ fn err(status: StatusCode, msg: impl ToString) -> Response {
     (status, Json(json!({"error": msg.to_string()}))).into_response()
 }
 
+/// GET /jobs: the job names and modes (for the admin page; no rules, URLs or other configuration).
+async fn list_jobs(State(app): State<Arc<App>>) -> Json<serde_json::Value> {
+    let jobs: Vec<_> = app
+        .cfg
+        .jobs
+        .iter()
+        .map(|(name, j)| json!({"name": name, "mode": j.mode}))
+        .collect();
+    Json(json!({"jobs": jobs, "stale_after_seconds": app.cfg.stale_after_seconds}))
+}
+
+// The admin page ([ui] enabled): static files built into the binary; the browser reads the JSON API.
+const UI_HTML: &str = include_str!("../ui/index.html");
+const UI_JS: &str = include_str!("../ui/app.js");
+const UI_CSS: &str = include_str!("../ui/style.css");
+
+fn page(kind: &'static str, body: &'static str) -> Response {
+    (
+        [(header::CONTENT_TYPE, kind), (header::CACHE_CONTROL, "no-cache")],
+        body,
+    )
+        .into_response()
+}
+
+async fn ui_html() -> Response {
+    page("text/html; charset=utf-8", UI_HTML)
+}
+
+async fn ui_js() -> Response {
+    page("text/javascript; charset=utf-8", UI_JS)
+}
+
+async fn ui_css() -> Response {
+    page("text/css; charset=utf-8", UI_CSS)
+}
+
 async fn health() -> &'static str {
     "ok"
 }
 
 async fn machines(State(app): State<Arc<App>>) -> Json<serde_json::Value> {
-    Json(serde_json::to_value(app.signals().await).unwrap_or_default())
+    let mut v = serde_json::to_value(app.signals().await).unwrap_or_default();
+    v["now"] = json!(now()); // the server's clock, for the age of each signal
+    Json(v)
 }
 
 async fn assess_job(
@@ -483,8 +524,15 @@ async fn end_hold(State(app): State<Arc<App>>, Path(id): Path<String>) -> Respon
 }
 
 fn router(app: Arc<App>) -> Router {
-    Router::new()
-        .route("/health", get(health))
+    let mut r = Router::new();
+    if app.cfg.ui.enabled {
+        r = r
+            .route("/ui", get(ui_html))
+            .route("/ui/app.js", get(ui_js))
+            .route("/ui/style.css", get(ui_css));
+    }
+    r.route("/health", get(health))
+        .route("/jobs", get(list_jobs))
         .route("/machines", get(machines))
         .route("/assess", get(assess_job))
         .route("/pick", post(pick_job))
@@ -720,6 +768,53 @@ endpoint = "llm"
             Err(ureq::Error::Status(s, _)) => s,
             Err(e) => panic!("{e}"),
         }
+    }
+
+    /// The real router with this configuration text and API key, on a random port.
+    async fn server_with(cfg: &str, key: Option<&str>) -> String {
+        let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = l.local_addr().unwrap();
+        let app = App::with_key(Config::from_toml(cfg).unwrap(), key.map(String::from)).unwrap();
+        tokio::spawn(async move { axum::serve(l, router(app)).await.unwrap() });
+        format!("http://{addr}")
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn admin_page_only_when_enabled() {
+        let off = server().await;
+        let on = server_with(&format!("[ui]\nenabled = true\n{CFG}"), None).await;
+        let keyed = server_with(&format!("[ui]\nenabled = true\n{CFG}"), Some("s3cret")).await;
+        tokio::task::spawn_blocking(move || {
+            assert_eq!(status(ureq::get(&format!("{off}/ui")).call()), 404, "off by default");
+            let r = ureq::get(&format!("{on}/ui")).call().unwrap();
+            assert!(r.content_type().starts_with("text/html"));
+            assert!(r.into_string().unwrap().contains("ui/app.js"));
+            assert_eq!(status(ureq::get(&format!("{on}/ui/app.js")).call()), 200);
+            assert_eq!(status(ureq::get(&format!("{on}/ui/style.css")).call()), 200);
+            // what the page reads
+            let v: serde_json::Value = ureq::get(&format!("{on}/jobs")).call().unwrap().into_json().unwrap();
+            assert_eq!(
+                v["jobs"],
+                json!([{"name": "big", "mode": "exclusive"}, {"name": "chat", "mode": "rank"},
+                                         {"name": "many", "mode": "spread"}])
+            );
+            let m: serde_json::Value = ureq::get(&format!("{on}/machines"))
+                .call()
+                .unwrap()
+                .into_json()
+                .unwrap();
+            assert!(m["now"].as_u64().unwrap() > 0, "the server's clock for signal ages");
+            // with a key: the page's files need none, its data does
+            assert_eq!(status(ureq::get(&format!("{keyed}/ui")).call()), 200);
+            assert_eq!(status(ureq::get(&format!("{keyed}/ui/app.js")).call()), 200);
+            assert_eq!(status(ureq::get(&format!("{keyed}/jobs")).call()), 401);
+            assert_eq!(
+                status(request_with("GET", &format!("{keyed}/jobs"), Some("s3cret")).call()),
+                200
+            );
+        })
+        .await
+        .unwrap();
     }
 
     #[tokio::test(flavor = "multi_thread")]

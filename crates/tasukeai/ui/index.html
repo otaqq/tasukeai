@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>tasukeai</title>
+<link rel="stylesheet" href="ui/style.css">
+</head>
+<body>
+<header>
+  <h1>tasukeai</h1>
+  <span id="status" class="muted">loading…</span>
+  <label class="muted"><input type="checkbox" id="auto" checked> refresh every 5 s</label>
+</header>
+
+<form id="keyform" hidden>
+  <p>This server needs an API key. It is kept in this tab only.</p>
+  <input type="password" id="key" autocomplete="off" placeholder="API key">
+  <button>Use</button>
+</form>
+
+<main>
+  <section>
+    <h2>Jobs</h2>
+    <p class="muted">Which machines can take each job now, and why the others cannot.</p>
+    <div id="jobs"></div>
+  </section>
+
+  <section>
+    <h2>Machines</h2>
+    <p class="muted">Signals as last collected; age in seconds, stale ones marked.</p>
+    <div class="scroll"><table id="machines"></table></div>
+    <details id="errorbox" hidden><summary id="errorsum"></summary><ul id="errors" class="errors"></ul></details>
+  </section>
+
+  <section>
+    <h2>Leases</h2>
+    <div class="scroll"><table id="leases"></table></div>
+  </section>
+
+  <section>
+    <h2>Holds</h2>
+    <div class="scroll"><table id="holds"></table></div>
+  </section>
+</main>
+<script src="ui/app.js"></script>
+</body>
+</html>

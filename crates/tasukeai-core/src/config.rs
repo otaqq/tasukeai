@@ -16,7 +16,7 @@ pub enum ConfigError {
 }
 
 /// How a job kind is placed.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, serde::Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Mode {
     /// One machine for one job, in priority order, with a lease.
@@ -163,6 +163,14 @@ pub struct State {
     pub path: Option<String>,
 }
 
+/// The admin page at /ui (static files; the browser reads the JSON API).
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct Ui {
+    /// Serve the page. Off by default: a node that does not serve it adds no routes.
+    #[serde(default)]
+    pub enabled: bool,
+}
+
 #[derive(Debug, Clone, Deserialize)]
 pub struct Config {
     /// Signals older than this many seconds count as unknown.
@@ -178,6 +186,8 @@ pub struct Config {
     pub jobs: BTreeMap<String, Job>,
     #[serde(default)]
     pub state: State,
+    #[serde(default)]
+    pub ui: Ui,
 }
 
 fn default_stale() -> u64 {

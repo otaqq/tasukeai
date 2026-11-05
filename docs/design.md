@@ -66,12 +66,19 @@ CLI (for scripts and workflow engines): `tasukeai pick <kind> --server URL` prin
 `tasukeai signals` and `tasukeai assess <kind>` decide locally without leases; `tasukeai hold <machine> [--job J]
 [--minutes M] [--note N] --server URL` and `tasukeai unhold <id> --server URL` for holds by hand.
 
-### Admin page (planned)
+### Admin page
 
-- A page at `/ui`, served by the same binary from the same HTTP API, so the CLI and the page always agree. Off unless
-  `[ui] enabled = true`.
-- First read-only: machines, signals, why each is not usable, leases, holds. Buttons that change things (hold,
-  release) come later, and only with an API key set, because anyone who reaches the page could otherwise use them.
+- A page at `/ui`, served by the same binary, off unless `[ui] enabled = true` (v0.9.0). Static files built into the
+  binary; the browser reads the public JSON API (`/jobs`, `/assess`, `/machines`, `/leases`, `/holds`), so the CLI and
+  the page always agree and the page adds nothing to the server's memory between requests. A separate process would
+  cost more (its own runtime and, on Kubernetes, its own Pod) for a page that only serves files.
+- Read-only: machines, signals, why each is not usable, leases, holds. Buttons that change things (hold, release)
+  come later, and only with an API key set, because anyone who reaches the page could otherwise use them.
+- Because the page uses nothing but the public API, it can move to a process of its own without being rewritten, once
+  it holds state on the server: a login flow (OIDC sessions), a view over several replicas or clusters, history. Then
+  the deciding process stays small and inside, and only the page faces users. Until then, one binary.
+- Single sign-on later, in this order: an authenticating proxy in front (oauth2-proxy, a forward-auth middleware),
+  which needs no change here; then, if needed, tasukeai checking OIDC bearer tokens next to the API key.
 
 ### Configuration and state
 

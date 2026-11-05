@@ -23,7 +23,9 @@ curl -H "Authorization: Bearer $(cat key)" 'http://127.0.0.1:9660/rank?job=chat'
 | Call | Answer |
 |---|---|
 | `GET /health` | `ok` |
-| `GET /machines` | every machine's signals and what could not be collected |
+| `GET /machines` | every machine's signals (`snapshot`: signal → `[value, collected at]`), what could not be collected (`errors`) and the server's clock (`now`) |
+| `GET /jobs` | the job names and modes, and `stale_after_seconds` (no rules, URLs or other configuration) |
+| `GET /ui` | the admin page, with `[ui] enabled` ([configuration.md](configuration.md#admin-page)); 404 otherwise |
 | `GET /assess?job=<kind>` | usable machines in order, reasons for the others (no lease); takes rules of the caller like `/rank` |
 | `POST /pick?job=<kind>` | `exclusive`: `{machine, lease, assessment}`; 409 with the reasons when none is free |
 | `POST /spread?job=<kind>&count=N` | `spread`: up to N leases, a machine once per free slot; 409 when none |
