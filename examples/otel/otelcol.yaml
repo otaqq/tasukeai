@@ -1,0 +1,30 @@
+# OpenTelemetry Collector: host metrics of the machine it runs on, sent over OTLP to a PromQL-compatible store.
+# tasukeai's built-in `otel` preset reads these (Linux). system.memory.limit and system.linux.memory.available are
+# optional metrics; the preset needs them.
+receivers:
+  host_metrics:
+    collection_interval: 15s
+    root_path: /hostfs            # the host's / mounted in the container (see compose.yaml)
+    scrapers:
+      cpu: {}
+      memory:
+        metrics:
+          system.memory.limit: { enabled: true }
+          system.linux.memory.available: { enabled: true }
+      load: {}
+      system: {}                  # system.uptime: the preset's `up`
+
+processors:
+  resource_detection:
+    detectors: [env, system]      # host.name from OTEL_RESOURCE_ATTRIBUTES, else the OS hostname
+
+exporters:
+  otlp_http:
+    metrics_endpoint: http://victoriametrics:8428/opentelemetry/v1/metrics
+
+service:
+  pipelines:
+    metrics:
+      receivers: [host_metrics]
+      processors: [resource_detection]
+      exporters: [otlp_http]

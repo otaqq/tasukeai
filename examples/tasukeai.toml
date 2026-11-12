@@ -1,5 +1,5 @@
 # Example configuration for tasukeai (see docs/design.md and the README). Machines get signals from presets
-# (built-in: node, node_darwin, windows), their own PromQL queries and HTTP checks; rules compare signals.
+# (built-in: node, node_darwin, windows, otel), their own PromQL queries and HTTP checks; rules compare signals.
 stale_after_seconds = 120
 
 [state]                          # keep leases and holds across restarts (omit for memory only)

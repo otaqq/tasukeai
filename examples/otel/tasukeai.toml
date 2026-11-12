@@ -1,0 +1,13 @@
+# tasukeai reading OpenTelemetry host metrics through VictoriaMetrics (examples/otel/compose.yaml).
+[metrics]
+url = "http://victoriametrics:8428"
+
+[machines.desk]                  # the instance is matched against the host_name label (host.name)
+priority = 1
+accel = "cpu"
+presets = ["otel"]
+rules = [{ signal = "up", min = 1 }, { signal = "cpu_busy_ratio", max = 0.8, because = "busy" }]
+jobs = { extract = 1 }
+
+[jobs.extract]
+mode = "spread"

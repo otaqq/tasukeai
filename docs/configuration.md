@@ -34,7 +34,7 @@ machine gets its signals from three places; later ones win for the same name.
 
 ```mermaid
 flowchart LR
-    p["presets<br/>built-in node, node_darwin, windows<br/>or your own [presets.x]"]
+    p["presets<br/>built-in node, node_darwin, windows, otel<br/>or your own [presets.x]"]
     q["queries<br/>PromQL of this machine only"]
     c["checks<br/>HTTP GET at decision time"]
     s(["signals of the machine"])
@@ -44,8 +44,9 @@ flowchart LR
 ```
 
 - **presets**: named sets of PromQL. The built-in ones read standard exporter metrics (`node`: node_exporter on
-  Linux, `node_darwin`: node_exporter on macOS, `windows`: windows_exporter); see
-  [presets.toml](../crates/tasukeai-core/src/presets.toml). Add your own for other exporters under `[presets.<name>]`.
+  Linux, `node_darwin`: node_exporter on macOS, `windows`: windows_exporter, `otel`: OpenTelemetry Collector on
+  Linux, below); see [presets.toml](../crates/tasukeai-core/src/presets.toml). Add your own for other exporters under
+  `[presets.<name>]`.
 - **queries**: PromQL for one machine, `queries = { idle_seconds = '...' }`.
 - **checks**: `checks = [{ signal, url, timeout_ms?, json? }]`. The signal is 1 when the URL answers 2xx in time, else
   0; with `json`, it is the number at that JSON pointer in the answer.
@@ -56,6 +57,33 @@ flowchart LR
 signal fails every rule on it. A machine that is off, asleep or away stops reporting and is not offered. Add a rule
 on `up` to say so explicitly. If the metrics store does not answer, its signals are unknown too, so a machine with a
 rule on `up` is not offered (fail closed).
+
+### OpenTelemetry
+
+Machines that send OpenTelemetry metrics instead of exposing Prometheus exporters work too, as long as the metrics
+end up in a store tasukeai can query with PromQL. tasukeai does not receive OTLP itself.
+
+```mermaid
+flowchart LR
+    otel["OpenTelemetry Collector<br/>hostmetrics receiver"] -- "OTLP" --> store[("PromQL-compatible store")]
+    store -- "PromQL" --> t["tasukeai<br/>presets = [&quot;otel&quot;]"]
+```
+
+The built-in `otel` preset reads the Collector's `hostmetrics` receiver on Linux: `up`, `ram_usable_bytes`,
+`ram_total_bytes`, `cpu_busy_ratio`, `load15`. It needs:
+
+- names in Prometheus style and resource attributes as labels: `system.cpu.time` as
+  `system_cpu_time_seconds_total`, `host.name` as `host_name`. The machine's `instance` is matched against
+  `host_name`.
+- the optional metrics `system.memory.limit` and `system.linux.memory.available` enabled in the Collector (the
+  `system.memory.usage` states overlap and do not add up to the total).
+- the `system` scraper: OTLP has no `up` series, so `up` is 1 while `system.uptime` is younger than 2 minutes.
+
+Checked with OpenTelemetry Collector Contrib 0.165.0 and VictoriaMetrics v1.156.0
+(`-opentelemetry.usePrometheusNaming`): all five signals read, and a machine whose Collector stops is rejected with
+`up = 0 < 1` after about 150 s. Other stores (Prometheus with its OTLP receiver, ...) may name or label the metrics
+differently; check what they store and write your own preset if needed. A runnable setup is in
+[examples/otel/](../examples/otel/).
 
 ## Machines
 

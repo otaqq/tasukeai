@@ -1,0 +1,36 @@
+# tasukeai with OpenTelemetry instead of Prometheus exporters. From the repository root:
+#   docker compose -f examples/otel/compose.yaml up -d --build
+#   curl -s 'localhost:9660/machines'
+#   curl -s 'localhost:9660/assess?job=extract'
+# OpenTelemetry Collector (hostmetrics) --OTLP--> VictoriaMetrics --PromQL--> tasukeai
+name: tasukeai-otel
+
+services:
+  otelcol:
+    image: otel/opentelemetry-collector-contrib:0.165.0
+    command: ["--config=/etc/otelcol.yaml"]
+    volumes:
+      - ./otelcol.yaml:/etc/otelcol.yaml:ro
+      - /:/hostfs:ro
+    environment:
+      OTEL_RESOURCE_ATTRIBUTES: host.name=desk   # the machine's name in tasukeai.toml
+    depends_on: [victoriametrics]
+
+  victoriametrics:
+    image: victoriametrics/victoria-metrics:v1.156.0
+    # OTLP names to Prometheus style (system.cpu.time -> system_cpu_time_seconds_total), as the preset expects
+    command: ["-opentelemetry.usePrometheusNaming"]
+    ports:
+      - "127.0.0.1:8428:8428"
+
+  tasukeai:
+    image: ghcr.io/otaqq/tasukeai:${TASUKEAI_VERSION:-latest}
+    build:
+      context: ../..
+      dockerfile: docker/Dockerfile
+      target: production
+    volumes:
+      - ./tasukeai.toml:/tasukeai.toml:ro
+    ports:
+      - "127.0.0.1:9660:9660"
+    depends_on: [victoriametrics]

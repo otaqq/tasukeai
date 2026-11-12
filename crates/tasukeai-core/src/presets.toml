@@ -24,3 +24,14 @@ up = 'max(up{instance="{instance}"})'
 ram_usable_bytes = 'max(windows_memory_physical_free_bytes{instance="{instance}"})'
 ram_total_bytes = 'max(windows_memory_physical_total_bytes{instance="{instance}"})'
 cpu_busy_ratio = 'clamp_min(1 - avg(rate(windows_cpu_time_total{instance="{instance}", mode="idle"}[2m])), 0)'
+
+[otel]            # OpenTelemetry Collector (hostmetrics receiver) on Linux, sent over OTLP to the store
+# Needs: the store converts names to Prometheus style and resource attributes to labels (host.name -> host_name;
+# VictoriaMetrics with -opentelemetry.usePrometheusNaming), and the collector enables the optional
+# system.memory.limit and system.linux.memory.available metrics. See examples/otel/.
+# OTLP has no `up` series: a machine is up while its uptime metric is younger than 2 minutes.
+up = 'max(time() - timestamp(system_uptime_seconds{host_name="{instance}"}) < bool 120)'
+ram_usable_bytes = 'max(system_linux_memory_available_bytes{host_name="{instance}"})'
+ram_total_bytes = 'max(system_memory_limit_bytes{host_name="{instance}"})'
+cpu_busy_ratio = 'clamp_min(1 - sum(rate(system_cpu_time_seconds_total{host_name="{instance}", state="idle"}[2m])) / max(system_cpu_logical_count{host_name="{instance}"}), 0)'
+load15 = 'max(system_cpu_load_average_15m{host_name="{instance}"})'

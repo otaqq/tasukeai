@@ -26,6 +26,8 @@ flowchart LR
     caller -- "runs the work" --> fleet
 ```
 
+- **Prometheus exporters or OpenTelemetry.** Built-in presets for node_exporter, windows_exporter and the
+  OpenTelemetry Collector's host metrics, read with PromQL from the store they already go to.
 - **No agent, no queue, no execution.** One binary, one TOML file. Signals come from the exporters you already run,
   plus optional HTTP checks at decision time.
 - **Three modes.** `exclusive` (one heavy job per machine, with a lease), `spread` (N workers over free slots),

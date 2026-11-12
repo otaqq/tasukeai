@@ -113,7 +113,7 @@ pub struct Machine {
     /// The value of the `instance` label of its metrics; defaults to the machine's name.
     #[serde(default)]
     pub instance: Option<String>,
-    /// Presets whose signals this machine has (built-in node, node_darwin, windows, or the configuration's own);
+    /// Presets whose signals this machine has (built-in node, node_darwin, windows, otel, or the configuration's own);
     /// later ones win for the same signal.
     #[serde(default)]
     pub presets: Vec<String>,

@@ -246,4 +246,13 @@ queries = { load15 = 'custom_load{instance="{instance}"}' }
         let bad = Config::from_toml("[machines.a]\npriority = 1\naccel = \"cpu\"\npresets = [\"nope\"]\n");
         assert!(bad.unwrap_err().to_string().contains("unknown preset nope"));
     }
+
+    #[test]
+    fn otel_preset_reads_host_name() {
+        let cfg = Config::from_toml("[machines.desk]\npriority = 1\naccel = \"cpu\"\npresets = [\"otel\"]\n").unwrap();
+        let q = cfg.queries_of("desk");
+        for s in ["up", "ram_usable_bytes", "ram_total_bytes", "cpu_busy_ratio", "load15"] {
+            assert!(q[s].contains(r#"host_name="desk""#), "{s}: {}", q[s]);
+        }
+    }
 }
