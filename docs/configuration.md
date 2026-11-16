@@ -115,7 +115,7 @@ differently; check what they store and write your own preset if needed. A runnab
 | Mode | For | Answer |
 |---|---|---|
 | `exclusive` | One heavy job that occupies a machine (training) | The first usable machine, with a lease that holds the whole machine |
-| `spread` | N copies of the same work in parallel (extraction workers) | Up to N leases, a machine once per free slot, in priority order |
+| `spread` | N copies of the same work in parallel (extraction workers) | Up to N leases, a machine once per free slot, in the job's order |
 | `rank` | Short requests one at a time (LLM chat) | The usable machines in order, no lease |
 
 A job naming an `endpoint` that a machine with a slot for it lacks is a configuration error.
@@ -137,7 +137,7 @@ Rules come from three places: the machine (owner rules), the job, and the caller
 
 ## How a decision is made
 
-For a job, every machine is checked in priority order (then by name). Every failed check becomes a reason; a machine
+For a job, every machine is checked (in priority order, then by name). Every failed check becomes a reason; a machine
 with no reasons is usable.
 
 ```mermaid
@@ -155,8 +155,8 @@ flowchart TD
     rules -- yes --> ok["usable"]
 ```
 
-The usable machines are then put in the job's order (below), and the mode decides: `exclusive` leases the first usable machine, `spread` fills free slots up to N, `rank` returns
-them all in order. Reasons read like `idle_seconds = 120 < 600 (someone is using it)`, `all 2 slot(s) leased` or
+The usable machines are then put in the job's order (below), and the mode decides: `exclusive` leases the first
+usable machine, `spread` fills free slots up to N, `rank` returns them all in order. Reasons read like `idle_seconds = 120 < 600 (someone is using it)`, `all 2 slot(s) leased` or
 `held by hand for extract: fan noise`.
 
 ## Order
