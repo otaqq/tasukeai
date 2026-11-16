@@ -5,7 +5,8 @@
 //! be saved to and loaded from a JSON file ([state] path), so a restart keeps both.
 
 use crate::config::Config;
-use crate::decide::{assess, pick, spread, Assessment, DecideError, Hold, Lease, Snapshot};
+use crate::config::Order;
+use crate::decide::{assess, pick_by, spread_by, Assessment, DecideError, Hold, Lease, Snapshot};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 
@@ -129,8 +130,20 @@ impl Leases {
         snap: &Snapshot,
         now: u64,
     ) -> Result<(Option<Lease>, Assessment), DecideError> {
+        self.pick_by(cfg, job, snap, None, now)
+    }
+
+    /// `pick` in a given order (None: the job's own).
+    pub fn pick_by(
+        &mut self,
+        cfg: &Config,
+        job: &str,
+        snap: &Snapshot,
+        order: Option<Order>,
+        now: u64,
+    ) -> Result<(Option<Lease>, Assessment), DecideError> {
         self.prune(now);
-        let (m, a) = pick(cfg, job, snap, &self.list, &self.holds, now)?;
+        let (m, a) = pick_by(cfg, job, snap, &self.list, &self.holds, order, now)?;
         Ok((m.map(|m| self.take(cfg, job, &m, now)), a))
     }
 
@@ -143,8 +156,21 @@ impl Leases {
         snap: &Snapshot,
         now: u64,
     ) -> Result<(Vec<Lease>, Assessment), DecideError> {
+        self.spread_by(cfg, job, count, snap, None, now)
+    }
+
+    /// `spread` in a given order (None: the job's own).
+    pub fn spread_by(
+        &mut self,
+        cfg: &Config,
+        job: &str,
+        count: u32,
+        snap: &Snapshot,
+        order: Option<Order>,
+        now: u64,
+    ) -> Result<(Vec<Lease>, Assessment), DecideError> {
         self.prune(now);
-        let (ms, a) = spread(cfg, job, count, snap, &self.list, &self.holds, now)?;
+        let (ms, a) = spread_by(cfg, job, count, snap, &self.list, &self.holds, order, now)?;
         Ok((ms.iter().map(|m| self.take(cfg, job, m, now)).collect(), a))
     }
 

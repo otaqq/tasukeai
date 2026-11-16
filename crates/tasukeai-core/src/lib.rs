@@ -8,10 +8,10 @@ pub mod decide;
 pub mod leases;
 
 pub use collect::{collect, Collected};
-pub use config::{Check, Config, ConfigError, Job, Machine, Metrics, Mode, Rule, State, Ui};
+pub use config::{Check, Config, ConfigError, Job, Machine, Metrics, Mode, Order, Rule, State, Ui};
 pub use decide::{
-    assess, assess_with, pick, rank, rank_with, spread, Assessment, Candidate, DecideError, Hold, Lease, Rejected,
-    Signals, Snapshot,
+    assess, assess_by, assess_with, pick, pick_by, rank, rank_by, rank_with, spread, spread_by, Assessment, Candidate,
+    DecideError, Hold, Lease, Rejected, Signals, Snapshot,
 };
 pub use leases::{Leases, RenewError};
 
@@ -250,5 +250,66 @@ rules = [{ signal = "up", min = 1, jobs = ["nope"] }]
             .unwrap_err()
             .to_string()
             .contains("unknown job paint"));
+    }
+
+    #[test]
+    fn energy_order_prefers_less_energy_and_a_request_can_ask_for_priority() {
+        let toml = r#"
+[machines.desk]
+priority = 1
+accel = "cuda"
+watts = 145
+jobs = { train = 1, extract = 1, chat = 1 }
+[machines.mini]
+priority = 2
+accel = "metal"
+watts = 17
+jobs = { train = 1, extract = 1, chat = 1 }
+[machines.laptop]
+priority = 3
+accel = "metal"
+jobs = { train = 1, extract = 1, chat = 1 }
+[jobs.train]
+mode = "exclusive"
+order = "energy"
+seconds = { desk = 3.0, mini = 10.2, laptop = 12.0 }
+[jobs.extract]
+mode = "spread"
+order = "energy"
+seconds = { desk = 3.0, mini = 10.2 }
+[jobs.chat]
+mode = "rank"
+"#;
+        let cfg = Config::from_toml(toml).unwrap();
+        let s = Snapshot::new();
+        // mini: 17 W x 10.2 s = 173 J < desk: 145 W x 3 s = 435 J; laptop has no watts, so it comes last
+        let (m, a) = pick(&cfg, "train", &s, &[], &[], NOW).unwrap();
+        assert_eq!(m.as_deref(), Some("mini"));
+        assert_eq!(a.order, Order::Energy);
+        let names: Vec<_> = a.usable.iter().map(|c| c.machine.as_str()).collect();
+        assert_eq!(names, ["mini", "desk", "laptop"]);
+        assert!((a.usable[0].energy_j.unwrap() - 173.4).abs() < 1e-9 && a.usable[2].energy_j.is_none());
+        assert_eq!(
+            spread(&cfg, "extract", 2, &s, &[], &[], NOW).unwrap().0,
+            ["mini", "desk"]
+        );
+        // urgent work asks for the priority order for one request
+        let (m, a) = pick_by(&cfg, "train", &s, &[], &[], Some(Order::Priority), NOW).unwrap();
+        assert_eq!((m.as_deref(), a.order), (Some("desk"), Order::Priority));
+        // a job without order keeps priority; energy can still be asked for (machines without seconds follow)
+        assert_eq!(rank(&cfg, "chat", &s, &[], NOW).unwrap().0, ["desk", "mini", "laptop"]);
+        assert_eq!(
+            rank_by(&cfg, "chat", &s, &[], &[], Some(Order::Energy), NOW).unwrap().0,
+            ["desk", "mini", "laptop"]
+        );
+        // the lease book takes the same order
+        let mut book = Leases::default();
+        assert_eq!(book.pick(&cfg, "train", &s, NOW).unwrap().0.unwrap().machine, "mini");
+        // configuration errors
+        let bad = |from: &str, to: &str| Config::from_toml(&toml.replace(from, to)).unwrap_err().to_string();
+        assert!(bad("laptop = 12.0", "nowhere = 12.0").contains("seconds names unknown machine nowhere"));
+        assert!(bad("laptop = 12.0", "laptop = 0").contains("must be above 0"));
+        assert!(bad("watts = 17", "watts = -1").contains("watts must be above 0"));
+        assert!(bad("seconds = { desk = 3.0, mini = 10.2 }\n", "").contains("order = \"energy\" needs seconds"));
     }
 }

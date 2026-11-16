@@ -97,6 +97,7 @@ differently; check what they store and write your own preset if needed. A runnab
 | `presets`, `queries`, `checks` | none | Its signals (above) |
 | `rules` | none | Owner rules (below) |
 | `endpoints` | none | Named addresses of its services: `{ llm = "http://desk:11434/v1" }` |
+| `watts` | none | Power while working, measured once; for jobs ordered by energy (see "Order") |
 
 ## Jobs
 
@@ -108,6 +109,8 @@ differently; check what they store and write your own preset if needed. A runnab
 | `rules` | none | Rules of the job, on top of the machine's |
 | `lease_seconds` | `600` | How long a lease lasts (renew it for longer work; a renew assesses the machine again) |
 | `endpoint` | none | Which machine endpoint the job uses; leases and `rank` answers carry its URL |
+| `order` | `priority` | How usable machines are ordered: `priority` or `energy` (see "Order") |
+| `seconds` | none | Seconds one unit of the job takes on each machine: `{ desk = 3.0, mini = 10.2 }` |
 
 | Mode | For | Answer |
 |---|---|---|
@@ -152,9 +155,41 @@ flowchart TD
     rules -- yes --> ok["usable"]
 ```
 
-Then the mode decides: `exclusive` leases the first usable machine, `spread` fills free slots up to N, `rank` returns
+The usable machines are then put in the job's order (below), and the mode decides: `exclusive` leases the first usable machine, `spread` fills free slots up to N, `rank` returns
 them all in order. Reasons read like `idle_seconds = 120 < 600 (someone is using it)`, `all 2 slot(s) leased` or
 `held by hand for extract: fan noise`.
+
+## Order
+
+By default (`order = "priority"`) usable machines come in priority order. A long job that is not urgent can prefer the
+machine that uses less energy for the same work: with `order = "energy"`, machines are ordered by
+`watts` (of the machine) × `seconds` (of the job on that machine), least first. Machines without both values follow, in
+priority order. A fast machine that draws much more power can take more energy for the same unit of work than a slower,
+frugal one:
+
+```toml
+[machines.desk]   # a desktop GPU
+priority = 1
+watts = 145
+[machines.mini]   # a small Apple Silicon machine
+priority = 2
+watts = 17
+
+[jobs.train-small]
+mode = "exclusive"
+order = "energy"
+seconds = { desk = 3.0, mini = 10.2 }   # mini: 17 x 10.2 = 173 J, desk: 145 x 3.0 = 435 J, so mini first
+```
+
+- Measure both once, with the same work on each machine. Without a wall meter, the accelerator's own reading is what
+  there is (`nvidia-smi --query-gpu=power.draw` for an NVIDIA GPU, `powermetrics` for the CPU, GPU and ANE of Apple
+  Silicon); it leaves out the rest of the machine, so say in a comment what the numbers cover.
+- The unit of `seconds` is up to you (a step, a page, a request), but it must be the same for every machine of the job.
+  How much faster one machine is depends on the work (a small and a large model can differ), so work of different sizes
+  is better as separate jobs.
+- A request can ask for the other order for one decision: `order=priority` (urgent work on a job ordered by energy) or
+  `order=energy` on `/pick`, `/spread`, `/rank` and `/assess` ([api.md](api.md)). Each answer says the `order` it used,
+  and each usable machine its `energy_j` when known.
 
 ## State
 

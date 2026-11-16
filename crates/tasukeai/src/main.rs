@@ -28,7 +28,7 @@ use std::{
     },
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
-use tasukeai_core::{assess, assess_with, collect, rank_with, Collected, Config, Leases, RenewError, Rule};
+use tasukeai_core::{assess, assess_by, collect, rank_by, Collected, Config, Leases, Order, RenewError, Rule};
 
 /// Rules of the caller for one decision, from the query: min.<signal>=<number>, max.<signal>=<number> (e.g. the free
 /// VRAM a model needs: min.vram_free_gb=10). Like configured rules, a missing or stale signal fails them.
@@ -319,6 +319,9 @@ struct JobQuery {
     job: String,
     #[serde(default = "one")]
     count: u32,
+    /// priority or energy: another order than the job's for this one request (e.g. urgent work by priority).
+    #[serde(default)]
+    order: Option<Order>,
 }
 
 fn one() -> u32 {
@@ -389,7 +392,7 @@ async fn assess_job(
         let mut book = app.leases.lock().unwrap();
         (book.active(now()).to_vec(), book.holds(now()).to_vec())
     };
-    match assess_with(&app.cfg, &q.job, &c.snapshot, &leases, &holds, &extra, now()) {
+    match assess_by(&app.cfg, &q.job, &c.snapshot, &leases, &holds, &extra, q.order, now()) {
         Ok(a) => Json(a).into_response(),
         Err(e) => err(StatusCode::NOT_FOUND, e),
     }
@@ -400,7 +403,7 @@ async fn pick_job(State(app): State<Arc<App>>, Query(q): Query<JobQuery>) -> Res
     let c = app.signals().await;
     let result = {
         let mut book = app.leases.lock().unwrap();
-        let r = book.pick(&app.cfg, &q.job, &c.snapshot, now());
+        let r = book.pick_by(&app.cfg, &q.job, &c.snapshot, q.order, now());
         if matches!(r, Ok((Some(_), _))) {
             app.save(&book);
         }
@@ -418,7 +421,7 @@ async fn spread_job(State(app): State<Arc<App>>, Query(q): Query<JobQuery>) -> R
     let c = app.signals().await;
     let result = {
         let mut book = app.leases.lock().unwrap();
-        let r = book.spread(&app.cfg, &q.job, q.count, &c.snapshot, now());
+        let r = book.spread_by(&app.cfg, &q.job, q.count, &c.snapshot, q.order, now());
         if matches!(&r, Ok((ls, _)) if !ls.is_empty()) {
             app.save(&book);
         }
@@ -437,7 +440,8 @@ async fn spread_job(State(app): State<Arc<App>>, Query(q): Query<JobQuery>) -> R
     }
 }
 
-/// GET /rank?job=[&min.<signal>=x][&max.<signal>=x]: the usable machines in order, no lease (holds count); with the
+/// GET /rank?job=[&min.<signal>=x][&max.<signal>=x][&order=priority|energy]: the usable machines in order, no lease
+/// (holds count); with the
 /// job's endpoint URLs, in the same order.
 async fn rank_job(
     State(app): State<Arc<App>>,
@@ -450,7 +454,7 @@ async fn rank_job(
     };
     let c = app.signals().await;
     let holds = app.leases.lock().unwrap().holds(now()).to_vec();
-    match rank_with(&app.cfg, &q.job, &c.snapshot, &holds, &extra, now()) {
+    match rank_by(&app.cfg, &q.job, &c.snapshot, &holds, &extra, q.order, now()) {
         Ok((order, a)) => {
             let endpoints: Vec<_> = a.usable.iter().map(|c| c.endpoint.clone()).collect();
             Json(json!({"machines": order, "endpoints": endpoints, "assessment": a})).into_response()
@@ -987,6 +991,10 @@ endpoint = "llm"
                 json!(["a", "b"]),
                 "without them as before"
             );
+            // another order for one request; the answer says which order it used
+            let (s, v) = call("GET", &format!("{base}/rank?job=chat&order=energy"));
+            assert_eq!((s, v["assessment"]["order"].clone()), (200, json!("energy")), "{v}");
+            assert_eq!(call("GET", &format!("{base}/rank?job=chat&order=fastest")).0, 400);
         })
         .await
         .unwrap();

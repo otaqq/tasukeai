@@ -2,7 +2,7 @@
 //! Pure functions over a snapshot of signals and the current leases, so they are easy to test and to use from a
 //! library caller that collects signals itself.
 
-use crate::config::{Config, Job, Mode, Rule};
+use crate::config::{Config, Job, Mode, Order, Rule};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
@@ -63,6 +63,9 @@ pub struct Candidate {
     /// The URL of the job's endpoint on this machine, when the job names one.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub endpoint: Option<String>,
+    /// Joules one unit of the job takes here (the machine's watts x the job's seconds on it), when both are known.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub energy_j: Option<f64>,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
@@ -75,10 +78,12 @@ pub struct Rejected {
     pub endpoint: Option<String>,
 }
 
-/// The usable machines in priority order, and why the others are not.
+/// The usable machines in order, and why the others are not.
 #[derive(Debug, Clone, Serialize, PartialEq)]
 pub struct Assessment {
     pub job: String,
+    /// The order of `usable` (the job's, or the one the request asked for).
+    pub order: Order,
     pub usable: Vec<Candidate>,
     pub rejected: Vec<Rejected>,
 }
@@ -139,12 +144,37 @@ pub fn assess_with(
     extra: &[Rule],
     now: u64,
 ) -> Result<Assessment, DecideError> {
+    assess_by(cfg, job, snap, leases, holds, extra, None, now)
+}
+
+/// `assess_with` in a given order (None: the job's own), e.g. by priority for urgent work on a job ordered by energy.
+#[allow(clippy::too_many_arguments)]
+pub fn assess_by(
+    cfg: &Config,
+    job: &str,
+    snap: &Snapshot,
+    leases: &[Lease],
+    holds: &[Hold],
+    extra: &[Rule],
+    order: Option<Order>,
+    now: u64,
+) -> Result<Assessment, DecideError> {
     let j: &Job = cfg
         .jobs
         .get(job)
         .ok_or_else(|| DecideError::UnknownJob(job.to_string()))?;
+    let order = order.unwrap_or(j.order);
     let mut machines: Vec<_> = cfg.machines.iter().collect();
     machines.sort_by_key(|(name, m)| (m.priority, (*name).clone()));
+    if order == Order::Energy {
+        // Least energy first; machines without a value keep their priority order after them (the sort is stable).
+        machines.sort_by(|(a, ma), (b, mb)| match (j.energy_on(a, ma), j.energy_on(b, mb)) {
+            (Some(x), Some(y)) => x.total_cmp(&y),
+            (Some(_), None) => std::cmp::Ordering::Less,
+            (None, Some(_)) => std::cmp::Ordering::Greater,
+            (None, None) => std::cmp::Ordering::Equal,
+        });
+    }
     let empty = Signals::new();
     let (mut usable, mut rejected) = (Vec::new(), Vec::new());
     for (name, m) in machines {
@@ -200,6 +230,7 @@ pub fn assess_with(
                 priority: m.priority,
                 free_slots,
                 endpoint,
+                energy_j: j.energy_on(name, m),
             });
         } else {
             rejected.push(Rejected {
@@ -211,6 +242,7 @@ pub fn assess_with(
     }
     Ok(Assessment {
         job: job.to_string(),
+        order,
         usable,
         rejected,
     })
@@ -241,12 +273,25 @@ pub fn pick(
     holds: &[Hold],
     now: u64,
 ) -> Result<(Option<String>, Assessment), DecideError> {
+    pick_by(cfg, job, snap, leases, holds, None, now)
+}
+
+/// `pick` in a given order (None: the job's own).
+pub fn pick_by(
+    cfg: &Config,
+    job: &str,
+    snap: &Snapshot,
+    leases: &[Lease],
+    holds: &[Hold],
+    order: Option<Order>,
+    now: u64,
+) -> Result<(Option<String>, Assessment), DecideError> {
     expect_mode(cfg, job, Mode::Exclusive)?;
-    let a = assess(cfg, job, snap, leases, holds, now)?;
+    let a = assess_by(cfg, job, snap, leases, holds, &[], order, now)?;
     Ok((a.usable.first().map(|c| c.machine.clone()), a))
 }
 
-/// `spread`: up to `count` machines (a machine appears once per slot it gives), filling slots in priority order.
+/// `spread`: up to `count` machines (a machine appears once per slot it gives), filling slots in the job's order.
 pub fn spread(
     cfg: &Config,
     job: &str,
@@ -256,8 +301,23 @@ pub fn spread(
     holds: &[Hold],
     now: u64,
 ) -> Result<(Vec<String>, Assessment), DecideError> {
+    spread_by(cfg, job, count, snap, leases, holds, None, now)
+}
+
+/// `spread` in a given order (None: the job's own).
+#[allow(clippy::too_many_arguments)]
+pub fn spread_by(
+    cfg: &Config,
+    job: &str,
+    count: u32,
+    snap: &Snapshot,
+    leases: &[Lease],
+    holds: &[Hold],
+    order: Option<Order>,
+    now: u64,
+) -> Result<(Vec<String>, Assessment), DecideError> {
     expect_mode(cfg, job, Mode::Spread)?;
-    let a = assess(cfg, job, snap, leases, holds, now)?;
+    let a = assess_by(cfg, job, snap, leases, holds, &[], order, now)?;
     let mut out = Vec::new();
     for c in &a.usable {
         for _ in 0..c.free_slots {
@@ -290,7 +350,20 @@ pub fn rank_with(
     extra: &[Rule],
     now: u64,
 ) -> Result<(Vec<String>, Assessment), DecideError> {
+    rank_by(cfg, job, snap, holds, extra, None, now)
+}
+
+/// `rank_with` in a given order (None: the job's own).
+pub fn rank_by(
+    cfg: &Config,
+    job: &str,
+    snap: &Snapshot,
+    holds: &[Hold],
+    extra: &[Rule],
+    order: Option<Order>,
+    now: u64,
+) -> Result<(Vec<String>, Assessment), DecideError> {
     expect_mode(cfg, job, Mode::Rank)?;
-    let a = assess_with(cfg, job, snap, &[], holds, extra, now)?;
+    let a = assess_by(cfg, job, snap, &[], holds, extra, order, now)?;
     Ok((a.usable.iter().map(|c| c.machine.clone()).collect(), a))
 }

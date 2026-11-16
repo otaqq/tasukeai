@@ -42,8 +42,8 @@ route to healthy inference servers, but know nothing about the machine's owner. 
 
 | Mode | For | Behaviour |
 |---|---|---|
-| `exclusive` | One heavy job that occupies a machine (training, a long render) | Machines that pass all rules, in priority order; the first gets a lease. Leased machines are not offered again. |
-| `spread` | N copies of the same work in parallel (extraction workers, batch inference) | Fill slots in priority order: each machine has a number of slots for the job kind; returns up to N assignments, each with a lease. Asking again later rebalances to what is free then. |
+| `exclusive` | One heavy job that occupies a machine (training, a long render) | Machines that pass all rules, in the job's order (priority unless set to energy); the first gets a lease. Leased machines are not offered again. |
+| `spread` | N copies of the same work in parallel (extraction workers, batch inference) | Fill slots in the job's order: each machine has a number of slots for the job kind; returns up to N assignments, each with a lease. Asking again later rebalances to what is free then. |
 | `rank` | Short requests, one at a time (LLM chat completions) | No lease. Returns the usable machines in order. Metrics may be up to a scrape interval old, so `rank` can add quick HTTP checks (e.g. "does the inference server answer within 2 s", "is the GPU busy right now") with a short cache. |
 
 ## Interfaces
@@ -150,4 +150,5 @@ lease = "30m"
 - Rules: a tiny expression language, or fixed rule kinds with parameters.
 - Leases and holds across restarts: done, a JSON file when `[state] path` is set (see "Configuration and state").
 - Whether `rank` should also learn which machine already has a model loaded (fewer reloads).
-- Power and energy as a rule input (prefer the machine that uses less for the same work).
+- Power and energy: done as an order (`order = "energy"`, static `watts` and `seconds` measured once; see
+  configuration.md "Order"). Open: watts from a live signal instead of a static value.

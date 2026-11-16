@@ -27,6 +27,18 @@ pub enum Mode {
     Rank,
 }
 
+/// The order in which the usable machines of a job are tried.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize, serde::Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Order {
+    /// By the machines' `priority` (then name).
+    #[default]
+    Priority,
+    /// By the energy one unit of the job takes there (`watts` of the machine x `seconds` of the job on it), least
+    /// first; machines without both values follow in priority order.
+    Energy,
+}
+
 /// A rule a machine must pass: a signal compared with a bound. A missing or stale signal fails the rule.
 #[derive(Debug, Clone, Deserialize, PartialEq)]
 pub struct Rule {
@@ -126,6 +138,10 @@ pub struct Machine {
     /// its URL with each lease (and in rank answers), so callers keep no address table of their own.
     #[serde(default)]
     pub endpoints: BTreeMap<String, String>,
+    /// Power while working, in watts, measured once (what it covers, the accelerator or the wall, is up to the
+    /// configuration). Used by jobs with order = "energy".
+    #[serde(default)]
+    pub watts: Option<f64>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -149,6 +165,20 @@ pub struct Job {
     /// for the job must have it.
     #[serde(default)]
     pub endpoint: Option<String>,
+    /// How the usable machines are ordered; a request may ask for another order.
+    #[serde(default)]
+    pub order: Order,
+    /// Seconds one unit of this job takes on each machine (measured once; any unit, the same for every machine).
+    /// With the machine's `watts`, the energy for order = "energy".
+    #[serde(default)]
+    pub seconds: BTreeMap<String, f64>,
+}
+
+impl Job {
+    /// Joules one unit of this job takes on `machine`, when both its watts and its seconds are known.
+    pub fn energy_on(&self, machine: &str, m: &Machine) -> Option<f64> {
+        Some(m.watts? * self.seconds.get(machine)?)
+    }
 }
 
 fn default_lease() -> u64 {
@@ -255,6 +285,9 @@ impl Config {
             for r in &m.rules {
                 check_rule(r, &format!("machine {name}"), &self.jobs)?;
             }
+            if m.watts.is_some_and(|w| w.is_nan() || w <= 0.0) {
+                return Err(ConfigError::Invalid(format!("machine {name}: watts must be above 0")));
+            }
             for p in &m.presets {
                 if !self.presets.contains_key(p) {
                     return Err(ConfigError::Invalid(format!("machine {name} uses unknown preset {p}")));
@@ -262,6 +295,23 @@ impl Config {
             }
         }
         for (name, j) in &self.jobs {
+            for (machine, secs) in &j.seconds {
+                if !self.machines.contains_key(machine) {
+                    return Err(ConfigError::Invalid(format!(
+                        "job {name}: seconds names unknown machine {machine}"
+                    )));
+                }
+                if secs.is_nan() || *secs <= 0.0 {
+                    return Err(ConfigError::Invalid(format!(
+                        "job {name}: seconds on {machine} must be above 0"
+                    )));
+                }
+            }
+            if j.order == Order::Energy && j.seconds.is_empty() {
+                return Err(ConfigError::Invalid(format!(
+                    "job {name}: order = \"energy\" needs seconds (and watts on the machines)"
+                )));
+            }
             for r in &j.rules {
                 check_rule(r, &format!("job {name}"), &self.jobs)?;
             }

@@ -84,6 +84,13 @@ servers) can tell "known but not usable now" from "not known to tasukeai".
 `max.<signal>=<number>` (e.g. `min.vram_free_gb=10` for a model that needs 10 GB). Like configured rules, a missing or
 stale signal fails them; the reason ends in `(asked by the caller)`.
 
+## Order
+
+`/pick`, `/spread`, `/rank` and `/assess` take `order=priority` or `order=energy` to order the usable machines another
+way than the job's `order` for one decision (e.g. urgent work on a job ordered by energy,
+[configuration.md](configuration.md#order)). An unknown value is a 400. The assessment says the `order` it used, and
+each usable machine carries `energy_j` (its watts × the job's seconds on it) when both are known.
+
 ## Holds
 
 A person keeps a machine out by hand: for every job or one job, until a time or until ended. Held machines are not
